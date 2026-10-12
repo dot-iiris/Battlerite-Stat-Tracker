@@ -748,7 +748,14 @@ async def recompute_season_elo(season_id: str):
         return
     player_mmr = {}
     player_match_count = {}  # pid -> matches played in this season before current
+    adjs = await season_adjustments(season_id)
+    ai = 0
     for m in matches:
+        # admin MMR adjustments made before this match count towards it
+        while ai < len(adjs) and adjs[ai]["at"] <= m["played_at"]:
+            k = rating_key(adjs[ai])
+            player_mmr[k] = player_mmr.get(k, BASE_MMR) + adjs[ai]["delta"]
+            ai += 1
         team_a = [p for p in m["players"] if p["team"] == "A"]
         team_b = [p for p in m["players"] if p["team"] == "B"]
         if not team_a or not team_b:
@@ -784,6 +791,17 @@ async def recompute_season_elo(season_id: str):
     schedule_leaderboard_push()
 
 
+async def season_adjustments(season_id: str, player_id: Optional[str] = None, counted_only: bool = False) -> list:
+    """Admin MMR adjustments in a season, oldest first. Each is a delta applied at
+    `at`, so recomputing a season replays it in order with the matches."""
+    q = {"season_id": season_id}
+    if player_id:
+        q["player_id"] = player_id
+    if counted_only:
+        q["mmr_track"] = {"$exists": False}
+    return await db.mmr_adjustments.find(q, {"_id": 0}).sort("at", 1).to_list(100000)
+
+
 async def get_player_mmr(player_id: str, season_id: str) -> float:
     """Compute current MMR for a player in a season based on matches."""
     matches = await db.matches.find({"season_id": season_id}).sort("played_at", 1).to_list(10000)
@@ -793,6 +811,8 @@ async def get_player_mmr(player_id: str, season_id: str) -> float:
             if mp["player_id"] == player_id and counts_for_mmr(mp):
                 mmr += mp.get("elo_delta", 0)
                 break
+    for a in await season_adjustments(season_id, player_id, counted_only=True):
+        mmr += a["delta"]
     return mmr
 
 
@@ -986,8 +1006,21 @@ async def leaderboard(season_id: Optional[str] = None, format: Optional[str] = N
             "_recent": [],  # list of bools newest first for streak calc
         }
 
+    adjs = await season_adjustments(season_id, counted_only=True)
+    ai = 0
+
+    def apply_adjustments(until: Optional[str]):
+        nonlocal ai
+        while ai < len(adjs) and (until is None or adjs[ai]["at"] <= until):
+            st = stats.get(adjs[ai]["player_id"])
+            if st:
+                st["mmr"] += adjs[ai]["delta"]
+                st["peak_mmr"] = max(st["peak_mmr"], st["mmr"])
+            ai += 1
+
     # matches are in chronological order (played_at asc)
     for m in matches:
+        apply_adjustments(m["played_at"])
         for mp in m["players"]:
             if mp["player_id"] not in stats:
                 continue
@@ -1010,6 +1043,7 @@ async def leaderboard(season_id: Optional[str] = None, format: Optional[str] = N
                 s["rounds_won"] += m["team_b_rounds"]
                 s["rounds_lost"] += m["team_a_rounds"]
             s["_recent"].append(won)
+    apply_adjustments(None)
 
     result = []
     for s in stats.values():
@@ -1057,8 +1091,14 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
         ).sort("played_at", 1).to_list(10000)
         cur = BASE_MMR
         local_peak = BASE_MMR
-        for sm in s_matches:
-            mp = next((p for p in sm["players"] if p["player_id"] == pid), None)
+        s_adjs = await season_adjustments(s["id"], pid, counted_only=True)
+        events = [(sm["played_at"], 1, sm) for sm in s_matches] + [(a["at"], 0, a) for a in s_adjs]
+        for _, kind, ev in sorted(events, key=lambda e: (e[0], e[1])):
+            if kind == 0:
+                cur += ev["delta"]
+                local_peak = max(local_peak, cur)
+                continue
+            mp = next((p for p in ev["players"] if p["player_id"] == pid), None)
             if mp and counts_for_mmr(mp):
                 cur += mp.get("elo_delta", 0)
                 local_peak = max(local_peak, cur)
@@ -1079,8 +1119,26 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
 
     all_players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0}).to_list(1000)}
 
+    # admin MMR adjustments, replayed in order with the matches
+    aq = {"player_id": pid, "mmr_track": {"$exists": False}}
+    if season_id:
+        aq["season_id"] = season_id
+    p_adjs = await db.mmr_adjustments.find(aq, {"_id": 0}).sort("at", 1).to_list(100000)
+    ai = 0
+
+    def apply_adjustments(until: Optional[str]):
+        nonlocal ai, mmr, peak
+        while ai < len(p_adjs) and (until is None or p_adjs[ai]["at"] <= until):
+            a = p_adjs[ai]
+            mmr += a["delta"]
+            peak = max(peak, mmr)
+            mmr_history.append({"match_id": None, "mmr": round(mmr, 2), "played_at": a["at"],
+                                "adjustment": a["delta"], "reason": a.get("reason", "")})
+            ai += 1
+
     # Iterate old->new for mmr history
     for m in reversed(matches):
+        apply_adjustments(m["played_at"])
         my = next((p for p in m["players"] if p["player_id"] == pid), None)
         if not my:
             continue
@@ -1118,6 +1176,7 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
             mmr += my.get("elo_delta", 0)
         peak = max(peak, mmr)
         mmr_history.append({"match_id": m["id"], "mmr": round(mmr, 2), "played_at": m["played_at"]})
+    apply_adjustments(None)
 
     fav_champs = sorted(champ_stats.values(), key=lambda x: -x["matches"])
     for c in fav_champs:
@@ -1739,6 +1798,16 @@ async def merge_players(data: MergePlayersInput, user: dict = Depends(admin_requ
             new_players.append(p)
         await db.matches.update_one({"id": m["id"]}, {"$set": {"players": new_players}})
 
+    # MMR adjustments follow the same rule as the matches
+    for sid in retire_src:
+        await db.mmr_adjustments.update_many({"player_id": src["id"], "season_id": sid, "mmr_track": {"$exists": False}},
+                                             {"$set": {"mmr_track": f"merged:{src['id']}"}})
+    for sid in retire_tgt:
+        await db.mmr_adjustments.update_many({"player_id": tgt["id"], "season_id": sid, "mmr_track": {"$exists": False}},
+                                             {"$set": {"mmr_track": f"merged:{tgt['id']}"}})
+    await db.mmr_adjustments.update_many({"player_id": src["id"]}, {"$set": {"player_id": tgt["id"]}})
+    adj_seasons = {a["season_id"] for a in await db.mmr_adjustments.find({"player_id": tgt["id"]}, {"_id": 0, "season_id": 1}).to_list(100000)}
+
     for coll, field in (("pending_matches", "team_a"), ("pending_matches", "team_b")):
         await db[coll].update_many({field: src["id"]}, {"$set": {f"{field}.$": tgt["id"]}})
     await db.link_requests.update_many({"player_id": src["id"]}, {"$set": {"player_id": tgt["id"], "player_name": tgt["name"]}})
@@ -1752,7 +1821,7 @@ async def merge_players(data: MergePlayersInput, user: dict = Depends(admin_requ
         await db.players.update_one({"id": tgt["id"]}, {"$set": upd})
     await db.player_merges.insert_one({"id": str(uuid.uuid4()), "source": src, "target_id": tgt["id"],
                                        "plan": plan, "by": user.get("name"), "at": _now_iso()})
-    for sid in {m["season_id"] for m in src_matches + tgt_matches}:
+    for sid in {m["season_id"] for m in src_matches + tgt_matches} | adj_seasons:
         await recompute_season_elo(sid)
     return {"dry_run": False, **summary}
 
@@ -1762,6 +1831,71 @@ async def admin_players(user: dict = Depends(admin_required)):
     """Players with their Discord link and in-game name (hidden from the public list)."""
     docs = await db.players.find({}, {"_id": 0}).to_list(5000)
     return sorted(docs, key=lambda x: x["name"].lower())
+
+
+class MmrAdjustInput(BaseModel):
+    season_id: str
+    set_to: Optional[float] = None     # give one of these: the new MMR...
+    delta: Optional[float] = None      # ...or how much to add (negative to take away)
+    reason: Optional[str] = ""
+
+
+@api_router.get("/admin/players/{pid}/mmr")
+async def admin_player_mmr(pid: str, user: dict = Depends(admin_required)):
+    """A player's current MMR in each ranked season, plus every manual adjustment."""
+    if not await db.players.find_one({"id": pid}):
+        raise HTTPException(404, "Player not found")
+    seasons = [s for s in await db.seasons.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000) if is_ranked_season(s)]
+    out = []
+    for s in seasons:
+        out.append({"season_id": s["id"], "season": s["name"], "active": bool(s.get("active")),
+                    "mmr": round(await get_player_mmr(pid, s["id"]), 2)})
+    names = {s["id"]: s["name"] for s in seasons}
+    adjs = await db.mmr_adjustments.find({"player_id": pid, "mmr_track": {"$exists": False}}, {"_id": 0}).sort("at", -1).to_list(1000)
+    for a in adjs:
+        a["season"] = names.get(a["season_id"], "?")
+    return {"seasons": out, "adjustments": adjs}
+
+
+@api_router.post("/admin/players/{pid}/mmr")
+async def admin_adjust_mmr(pid: str, data: MmrAdjustInput, user: dict = Depends(admin_required)):
+    player = await db.players.find_one({"id": pid}, {"_id": 0})
+    if not player:
+        raise HTTPException(404, "Player not found")
+    season = await db.seasons.find_one({"id": data.season_id}, {"_id": 0})
+    if not season:
+        raise HTTPException(404, "Season not found")
+    if not is_ranked_season(season):
+        raise HTTPException(400, "Unranked games don't have MMR")
+    if (data.set_to is None) == (data.delta is None):
+        raise HTTPException(400, "Give either a new MMR or an amount to add")
+    current = await get_player_mmr(pid, data.season_id)
+    if data.set_to is not None:
+        if not 0 <= data.set_to <= 5000:
+            raise HTTPException(400, "MMR must be between 0 and 5000")
+        delta = data.set_to - current
+    else:
+        delta = data.delta
+    delta = round(delta, 2)
+    if delta == 0:
+        raise HTTPException(400, f"{player['name']} is already on {round(current)} MMR")
+    doc = {"id": str(uuid.uuid4()), "player_id": pid, "season_id": data.season_id, "delta": delta,
+           "mmr_before": round(current, 2), "mmr_after": round(current + delta, 2),
+           "reason": (data.reason or "").strip()[:200], "by": user.get("name") or user.get("email"), "at": _now_iso()}
+    await db.mmr_adjustments.insert_one(doc)
+    doc.pop("_id", None)
+    await recompute_season_elo(data.season_id)   # later matches (if any were backdated) and the leaderboard
+    return doc
+
+
+@api_router.delete("/admin/mmr-adjustments/{aid}")
+async def admin_undo_mmr_adjustment(aid: str, user: dict = Depends(admin_required)):
+    a = await db.mmr_adjustments.find_one({"id": aid}, {"_id": 0})
+    if not a:
+        raise HTTPException(404, "Adjustment not found")
+    await db.mmr_adjustments.delete_one({"id": aid})
+    await recompute_season_elo(a["season_id"])
+    return {"ok": True}
 
 
 @api_router.get("/admin/discord-accounts")

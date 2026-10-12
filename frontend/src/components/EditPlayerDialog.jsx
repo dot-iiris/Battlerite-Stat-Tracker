@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import api from "@/api";
 import { toast } from "sonner";
 import { X, Save, Unlink, GitMerge } from "lucide-react";
+import PlayerMmrEditor from "@/components/PlayerMmrEditor";
 
 const inputCls = "w-full bg-[#121828] border border-[#1B2438] focus:border-cyan-400 focus:outline-none rounded px-3 py-2 text-sm";
 const labelCls = "block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5";
 
 // Admin: rename a player, set their in-game name, and link / change / remove their Discord account.
-export default function EditPlayerDialog({ player, players = [], onClose, onSaved }) {
+export default function EditPlayerDialog({ player, players = [], onClose, onSaved, onMmrChanged }) {
   const [name, setName] = useState(player.name);
   const [ign, setIgn] = useState(player.ign || "");
   const [accounts, setAccounts] = useState([]);
@@ -119,6 +120,9 @@ export default function EditPlayerDialog({ player, players = [], onClose, onSave
                 <Unlink className="w-3.5 h-3.5" /> Unlink Discord
               </button>
             )}
+          </div>
+          <div className="pt-3 border-t border-[#1B2438]">
+            <PlayerMmrEditor player={player} onChanged={onMmrChanged} />
           </div>
           <div className="pt-3 border-t border-[#1B2438]">
             <label className={labelCls}>Merge a duplicate into this player</label>
