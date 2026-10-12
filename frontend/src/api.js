@@ -64,7 +64,11 @@ const PREFETCH = {
     api.get("/players");
     api.get("/stats/recap", { params: { days: 90, season_id: sid } });
   },
-  "/matches": () => { api.get("/matches", { params: {} }); api.get("/seasons"); api.get("/players"); },
+  "/matches": async () => {
+    api.get("/players");
+    const sid = await activeSeasonId();
+    api.get("/matches", { params: sid ? { season_id: sid } : {} });
+  },
   "/leaderboard": async () => {
     const sid = await activeSeasonId();
     if (sid) api.get("/stats/leaderboard", { params: { season_id: sid } });
