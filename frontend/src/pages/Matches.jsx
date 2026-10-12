@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import api from "@/api";
 import { toast } from "sonner";
-import { Trash2, Filter, Pencil, Search, Download, ChevronDown } from "lucide-react";
+import { Trash2, Filter, Pencil, Search, Download, ChevronDown, Send } from "lucide-react";
 import { useAuth } from "@/AuthContext";
 import EditMatchDialog from "@/components/EditMatchDialog";
 import ChampionPortrait from "@/components/ChampionPortrait";
@@ -22,6 +22,22 @@ export default function Matches() {
   const [params, setParams] = useSearchParams();
   const openId = params.get("match");
   const scrolledTo = useRef(null);
+  const [logStatus, setLogStatus] = useState(null);   // admin: matches not yet in the Discord match log
+
+  useEffect(() => {
+    if (isAdmin) api.get("/admin/match-log/backfill").then((r) => setLogStatus(r.data)).catch(() => {});
+  }, [isAdmin]);
+
+  const backfill = async () => {
+    if (!window.confirm(`Post ${logStatus.unposted} match${logStatus.unposted === 1 ? "" : "es"} to the Discord match log, oldest first? New matches carry on posting as normal afterwards.`)) return;
+    try {
+      const { data } = await api.post("/admin/match-log/backfill");
+      toast.success(`Posting ${data.queued} match${data.queued === 1 ? "" : "es"} to Discord - about ${Math.ceil(data.seconds / 60)} min`);
+      setLogStatus({ ...logStatus, unposted: 0, running: true });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't start posting");
+    }
+  };
 
   const toggleOpen = (id) => {
     const next = new URLSearchParams(params);
@@ -75,6 +91,13 @@ export default function Matches() {
           <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// History Feed</div>
           <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Match History</h1>
         </div>
+        <div className="flex flex-wrap gap-2">
+        {isAdmin && logStatus?.configured && logStatus.unposted > 0 && !logStatus.running && (
+          <button onClick={backfill} data-testid="matches-backfill-log"
+            className="border border-cyan-400/60 text-cyan-400 hover:bg-cyan-400/10 font-mono-hud font-bold uppercase tracking-wider text-xs px-4 py-2.5 rounded flex items-center gap-2">
+            <Send className="w-4 h-4" /> Post {logStatus.unposted} old to match log
+          </button>
+        )}
         <a
           href={`${process.env.REACT_APP_BACKEND_URL}/api/exports/matches.csv${seasonFilter ? `?season_id=${seasonFilter}` : ""}`}
           className="btn-glow bg-cyan-400 hover:bg-cyan-300 text-black font-mono-hud font-bold uppercase tracking-wider text-xs px-4 py-2.5 rounded flex items-center gap-2"
@@ -82,6 +105,7 @@ export default function Matches() {
         >
           <Download className="w-4 h-4" strokeWidth={3} /> Export CSV
         </a>
+        </div>
       </div>
 
       <div className="hud-card p-4 flex flex-wrap gap-3 items-center">

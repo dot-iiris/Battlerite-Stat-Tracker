@@ -2522,8 +2522,28 @@ async def match_log_payload(m: dict) -> dict:
     return {"embeds": [embed], "allowed_mentions": {"parse": []}}
 
 
+_match_log_lock = asyncio.Lock()   # one post at a time, so the channel stays in order
+_backfill_running = False
+
+
+async def _webhook_retry(method: str, url: str, payload: Optional[dict]):
+    """Webhook call that waits and retries when Discord says we're going too fast."""
+    loop = asyncio.get_running_loop()
+    for attempt in range(6):
+        status, body = await loop.run_in_executor(None, _webhook_call, method, url, payload)
+        if status != 429:
+            return status, body
+        await asyncio.sleep(2 + attempt * 2)
+    return status, body
+
+
 async def post_match_log(mid: str):
     """Post the match to the log channel, or edit its existing post."""
+    async with _match_log_lock:
+        await _post_match_log(mid)
+
+
+async def _post_match_log(mid: str):
     m = await db.matches.find_one({"id": mid}, {"_id": 0})
     if not m or not MATCH_LOG_WEBHOOK:
         return
@@ -2533,18 +2553,50 @@ async def post_match_log(mid: str):
     if log_ref.get("message_id"):
         if log_ref.get("webhook") != MATCH_LOG_WEBHOOK:
             return  # posted through an old webhook we can no longer edit
-        status, _ = await loop.run_in_executor(None, _webhook_call, "PATCH",
-                                               f"{MATCH_LOG_WEBHOOK}/messages/{log_ref['message_id']}", payload)
+        status, _ = await _webhook_retry("PATCH", f"{MATCH_LOG_WEBHOOK}/messages/{log_ref['message_id']}", payload)
         if status >= 300:
             logging.getLogger(__name__).warning("Match log edit returned %s", status)
         return  # if someone deleted the post in Discord, leave it deleted
-    status, msg = await loop.run_in_executor(None, _webhook_call, "POST", f"{MATCH_LOG_WEBHOOK}?wait=true", payload)
+    status, msg = await _webhook_retry("POST", f"{MATCH_LOG_WEBHOOK}?wait=true", payload)
     if status < 300 and msg:
         await db.matches.update_one({"id": mid}, {"$set": {
             "discord_log": {"message_id": msg["id"], "webhook": MATCH_LOG_WEBHOOK},
         }})
     else:
         logging.getLogger(__name__).warning("Match log webhook returned %s", status)
+
+
+async def _backfill_match_log(ids: list):
+    global _backfill_running
+    try:
+        async with _match_log_lock:   # new matches logged meanwhile wait, then post after these
+            for mid in ids:
+                await _post_match_log(mid)
+                await asyncio.sleep(1)   # stay well under Discord's webhook rate limit
+    finally:
+        _backfill_running = False
+
+
+@api_router.get("/admin/match-log/backfill")
+async def match_log_backfill_status(user: dict = Depends(admin_required)):
+    unposted = await db.matches.count_documents({"discord_log": {"$exists": False}})
+    return {"configured": bool(MATCH_LOG_WEBHOOK), "unposted": unposted, "running": _backfill_running}
+
+
+@api_router.post("/admin/match-log/backfill")
+async def match_log_backfill(user: dict = Depends(admin_required)):
+    """Post every match that isn't in the Discord match log yet, oldest first."""
+    global _backfill_running
+    if not MATCH_LOG_WEBHOOK:
+        raise HTTPException(400, "DISCORD_MATCH_LOG_WEBHOOK_URL isn't set")
+    if _backfill_running:
+        raise HTTPException(409, "Already posting old matches - give it a minute")
+    docs = await db.matches.find({"discord_log": {"$exists": False}}, {"_id": 0, "id": 1, "played_at": 1}) \
+        .sort("played_at", 1).to_list(100000)
+    if docs:
+        _backfill_running = True
+        _spawn(_backfill_match_log([d["id"] for d in docs]))
+    return {"queued": len(docs), "seconds": len(docs)}
 
 
 async def remove_match_log(m: dict):
