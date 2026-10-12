@@ -108,16 +108,16 @@ export default function PlayerProfile() {
           {stats.champions.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No matches yet.</div> : (
             <div className="space-y-2">
               {stats.champions.slice(0, 8).map((c) => (
-                <div key={c.champion} className="flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded">
+                <Link key={c.champion} to={`/champions/${encodeURIComponent(c.champion)}`} className="group flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
                   <div className="flex items-center gap-2">
-                    <ChampionPortrait name={c.champion} role={c.role} size={28} />
-                    <span className="font-medium">{c.champion}</span>
+                    <ChampionPortrait name={c.champion} role={c.role} size={28} linkToProfile={false} />
+                    <span className="font-medium group-hover:text-cyan-400">{c.champion}</span>
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-xs font-mono-hud text-slate-400">{c.matches}m</span>
                     <span className="font-mono-hud text-[#00E676] font-bold text-sm">{c.winrate}%</span>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           )}
@@ -148,13 +148,13 @@ export default function PlayerProfile() {
           {stats.teammates.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No teammates yet.</div> : (
             <div className="space-y-2">
               {stats.teammates.map((t) => (
-                <div key={t.player_id} className="flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded">
-                  <Link to={`/players/${t.player_id}`} className="hover:text-cyan-400">{t.name}</Link>
+                <Link key={t.player_id} to={`/players/${t.player_id}`} className="group flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
+                  <span className="group-hover:text-cyan-400">{t.name}</span>
                   <div className="flex items-center gap-3 text-xs font-mono-hud">
                     <span className="text-slate-400">{t.wins}W / {t.matches - t.wins}L</span>
                     <span className={t.winrate >= 50 ? "text-[#00E676]" : "text-[#FF2E55]"}>{t.winrate}%</span>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           )}
@@ -165,13 +165,13 @@ export default function PlayerProfile() {
           {stats.opponents.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No opponents yet.</div> : (
             <div className="space-y-2">
               {stats.opponents.map((o) => (
-                <div key={o.player_id} className="flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded">
-                  <Link to={`/players/${o.player_id}`} className="hover:text-cyan-400">{o.name}</Link>
+                <Link key={o.player_id} to={`/players/${o.player_id}`} className="group flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
+                  <span className="group-hover:text-cyan-400">{o.name}</span>
                   <div className="flex items-center gap-3 text-xs font-mono-hud">
                     <span className="text-slate-400">{o.wins}W / {o.matches - o.wins}L</span>
                     <span className={o.winrate >= 50 ? "text-[#00E676]" : "text-[#FF2E55]"}>{o.winrate}%</span>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           )}
