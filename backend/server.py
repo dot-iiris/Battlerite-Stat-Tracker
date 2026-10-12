@@ -163,7 +163,8 @@ class PlayerCreate(BaseModel):
     name: str
 
 class PlayerStats(BaseModel):
-    """Raw end-of-match scoreboard numbers, stored exactly as shown in game.
+    """Raw scoreboard numbers from the in-game "Average Total" tab (per-round
+    averages), stored exactly as shown.
     Any normalisation is derived at read time (see normalize_match_stats)."""
     score: Optional[int] = Field(default=None, ge=0)
     damage: Optional[int] = Field(default=None, ge=0)
@@ -1611,16 +1612,21 @@ async def discard_pending_match(pmid: str, user: dict = Depends(admin_required))
 
 
 # --------- Scoreboard stat normalisation (derived, never stored) ---------
-STATS_MODEL_VERSION = 1
+STATS_MODEL_VERSION = 2
 STAT_FIELDS = ("score", "damage", "protection", "disables")
+# The in-game "Average Total" tab shows (sum of every round) / rounds played,
+# so stored raw stats are per-round averages.
+STATS_RAW_BASIS = "per_round_average"
 
 def normalize_match_stats(match: dict) -> dict:
     """Derive comparable numbers from raw scoreboard stats.
 
     Raw values stay untouched in match.players[].stats, so this function can be
     rewritten (bump STATS_MODEL_VERSION) and every match re-derived at any time.
-    v1: per-round values, share of own team's total, and damage relative to
-    the enemy team's total protection.
+    Raw stats are per-round averages (STATS_RAW_BASIS). The whole match is
+    passed in, so formulas can use teammates' and opponents' numbers.
+    v2: share of own team's total, and damage relative to the enemy team's
+    protection.
     """
     rounds = (match.get("team_a_rounds") or 0) + (match.get("team_b_rounds") or 0)
     teams = {"A": [], "B": []}
@@ -1640,7 +1646,6 @@ def normalize_match_stats(match: dict) -> dict:
                 v = raw.get(f)
                 if v is None:
                     continue
-                derived[f"{f}_per_round"] = round(v / rounds, 2) if rounds else None
                 tot = team_total(p["team"], f)
                 derived[f"{f}_team_share"] = round(v / tot, 4) if tot else None
             dmg = raw.get("damage")
@@ -1649,7 +1654,8 @@ def normalize_match_stats(match: dict) -> dict:
                 derived["damage_vs_enemy_protection"] = round(dmg / (dmg + enemy_prot), 4) if (dmg + enemy_prot) else None
         out.append({"player_id": p["player_id"], "team": p["team"], "champion": p["champion"],
                     "raw": raw or None, "derived": derived})
-    return {"match_id": match.get("id"), "rounds": rounds, "model_version": STATS_MODEL_VERSION, "players": out}
+    return {"match_id": match.get("id"), "rounds": rounds, "model_version": STATS_MODEL_VERSION,
+            "raw_basis": STATS_RAW_BASIS, "players": out}
 
 
 @api_router.get("/matches/{mid}/stats")

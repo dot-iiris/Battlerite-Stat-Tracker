@@ -98,7 +98,7 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
         {pm.source_ref && <a href={pm.source_ref} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">Discord message</a>}
       </div>
       <div className="hidden sm:grid grid-cols-6 gap-2 text-[10px] font-mono-hud uppercase tracking-wider text-slate-500">
-        <span>Player</span><span>Champion</span>{STAT_FIELDS.map((f) => <span key={f}>{f} (optional)</span>)}
+        <span>Player</span><span>Champion</span>{STAT_FIELDS.map((f) => <span key={f}>{f} avg (optional)</span>)}
       </div>
       {renderTeam("A", "text-cyan-400")}
       {renderTeam("B", "text-[#FF2E55]")}
@@ -156,7 +156,7 @@ export default function Pending() {
       <div>
         <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Discord Inbox</div>
         <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Pending</h1>
-        <p className="text-sm text-slate-400 mt-2">Matches reported from Discord wait here until an admin adds champions. Stats are optional.</p>
+        <p className="text-sm text-slate-400 mt-2">Matches reported from Discord wait here until an admin adds champions. Stats are optional — enter them from the scoreboard's Average Total tab.</p>
       </div>
 
       <section className="space-y-3">
