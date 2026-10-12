@@ -1577,6 +1577,7 @@ async def champion_stats(name: str, season_id: Optional[str] = None):
         "teammate_champions": teammates_list,
         "opponent_champions": opponents_list,
         "recent_matches": matches[:10],
+        "matches": matches,   # every match this champion played (newest first) - the champion page lists them
     }
 
 

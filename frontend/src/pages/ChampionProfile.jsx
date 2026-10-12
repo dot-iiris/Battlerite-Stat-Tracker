@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api from "@/api";
-import { Flame, Users, Swords, Shield, ArrowLeft } from "lucide-react";
+import { Flame, Users, Swords, Shield, ArrowLeft, ChevronDown } from "lucide-react";
+import MatchDetails from "@/components/MatchDetails";
 import ChampionPortrait from "@/components/ChampionPortrait";
 
 const roleAccent = (r) =>
@@ -14,10 +15,16 @@ export default function ChampionProfile() {
   const [stats, setStats] = useState(null);
   const [seasons, setSeasons] = useState([]);
   const [seasonId, setSeasonId] = useState("");
+  const [players, setPlayers] = useState([]);
+  const [openId, setOpenId] = useState(null);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     api.get("/seasons").then((r) => setSeasons(r.data));
+    api.get("/players").then((r) => setPlayers(r.data));
   }, []);
+
+  useEffect(() => { setOpenId(null); setShowAll(false); }, [name, seasonId]);
 
   useEffect(() => {
     setStats(null);
@@ -37,6 +44,9 @@ export default function ChampionProfile() {
   );
 
   const accent = roleAccent(stats.role);
+  const allMatches = stats.matches || stats.recent_matches || [];
+  const shown = showAll ? allMatches : allMatches.slice(0, 10);
+  const playerName = (id) => players.find((p) => p.id === id)?.name || "—";
   const wrClass = stats.total_picks === 0 ? "text-slate-500" : (stats.winrate >= 50 ? "text-[#00E676]" : "text-[#FF2E55]");
 
   return (
@@ -168,11 +178,15 @@ export default function ChampionProfile() {
       </div>
 
       <div className="hud-card p-5">
-        <h3 className="font-heading text-lg font-bold uppercase mb-4 flex items-center gap-2"><Flame className="w-4 h-4 text-[#FFB800]" /> Recent Matches</h3>
-        {stats.recent_matches.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No matches found.</div> : (
+        <h3 className="font-heading text-lg font-bold uppercase mb-4 flex items-center gap-2">
+          <Flame className="w-4 h-4 text-[#FFB800]" /> Matches
+          <span className="text-xs font-mono-hud text-slate-500 normal-case">{allMatches.length}</span>
+        </h3>
+        {allMatches.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No matches found.</div> : (
           <div className="space-y-2">
-            {stats.recent_matches.map((m) => {
+            {shown.map((m) => {
               const won_a = m.team_a_rounds > m.team_b_rounds;
+              const open = openId === m.id;
               const icons = (team) => (
                 <span className={`flex items-center gap-1 ${(team === "A") === won_a ? "" : "opacity-50"}`}>
                   {m.players.filter((p) => p.team === team).map((p) => (
@@ -183,25 +197,42 @@ export default function ChampionProfile() {
                 </span>
               );
               return (
-                <Link key={m.id} to={`/matches?match=${m.id}`} data-testid={`champion-recent-${m.id}`}
-                  className="flex items-center justify-between gap-3 p-3 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
-                  <div className="flex items-center gap-3 flex-wrap min-w-0">
-                    <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
-                    <span className="font-mono-hud text-sm whitespace-nowrap">
-                      <span className={won_a ? "text-[#00E676]" : "text-slate-400"}>{m.team_a_rounds}</span>
-                      <span className="text-slate-600 mx-2">:</span>
-                      <span className={!won_a ? "text-[#00E676]" : "text-slate-400"}>{m.team_b_rounds}</span>
+                <div key={m.id} className={`bg-[#121828]/60 border rounded transition-colors ${open ? "border-cyan-400/50" : "border-[#1B2438] hover:border-cyan-400/40"}`}>
+                  <button type="button" onClick={() => setOpenId(open ? null : m.id)} data-testid={`champion-match-${m.id}`}
+                    className="w-full flex items-center justify-between gap-3 p-3 text-left">
+                    <div className="flex items-center gap-3 flex-wrap min-w-0">
+                      <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
+                      <span className="font-mono-hud text-sm whitespace-nowrap">
+                        <span className={won_a ? "text-[#00E676]" : "text-slate-400"}>{m.team_a_rounds}</span>
+                        <span className="text-slate-600 mx-2">:</span>
+                        <span className={!won_a ? "text-[#00E676]" : "text-slate-400"}>{m.team_b_rounds}</span>
+                      </span>
+                      <span className="flex items-center gap-2">
+                        {icons("A")}
+                        <span className="text-xs text-slate-600">vs</span>
+                        {icons("B")}
+                      </span>
+                    </div>
+                    <span className="flex items-center gap-2 text-xs font-mono-hud text-slate-500 whitespace-nowrap">
+                      {new Date(m.played_at).toLocaleDateString()}
+                      <ChevronDown className={`w-4 h-4 transition-transform ${open ? "rotate-180 text-cyan-400" : ""}`} />
                     </span>
-                    <span className="flex items-center gap-2">
-                      {icons("A")}
-                      <span className="text-xs text-slate-600">vs</span>
-                      {icons("B")}
-                    </span>
-                  </div>
-                  <span className="text-xs font-mono-hud text-slate-500 whitespace-nowrap">{new Date(m.played_at).toLocaleDateString()}</span>
-                </Link>
+                  </button>
+                  {open && (
+                    <div className="px-3 pb-3">
+                      <MatchDetails match={m} playerName={playerName}
+                        seasonName={seasons.find((x) => x.id === m.season_id)?.name} />
+                    </div>
+                  )}
+                </div>
               );
             })}
+            {allMatches.length > shown.length && (
+              <button type="button" onClick={() => setShowAll(true)}
+                className="w-full py-2 text-xs font-mono-hud uppercase tracking-wider text-cyan-400 hover:text-cyan-300">
+                Show all {allMatches.length} matches
+              </button>
+            )}
           </div>
         )}
       </div>
