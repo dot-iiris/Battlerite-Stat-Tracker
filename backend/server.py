@@ -16,6 +16,7 @@ from typing import List, Optional, Literal
 from itertools import combinations, permutations
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File
+from fastapi.responses import RedirectResponse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from starlette.middleware.cors import CORSMiddleware
@@ -285,6 +286,7 @@ async def startup():
     # Indexes
     await db.users.create_index("email", unique=True)
     await db.users.create_index("id", unique=True)
+    await db.users.create_index("discord_id", unique=True, sparse=True)
     await db.players.create_index("id", unique=True)
     await db.seasons.create_index("id", unique=True)
     await db.matches.create_index("id", unique=True)
@@ -358,7 +360,7 @@ async def shutdown():
 async def login(data: LoginInput, response: Response):
     email = data.email.lower()
     user = await db.users.find_one({"email": email})
-    if not user or not verify_password(data.password, user["password_hash"]):
+    if not user or not user.get("password_hash") or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_access_token(user["id"], user["email"])
     response.set_cookie(
@@ -401,6 +403,180 @@ async def logout(response: Response, user: dict = Depends(get_current_user)):
 @api_router.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return user
+
+
+
+# --------- Log in with Discord ---------
+# Discord Developer Portal > your app (the bot's app is fine) > OAuth2:
+#   copy Client ID + Client Secret, and add the redirect URL below.
+DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "").strip()
+DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "").strip()
+DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "").strip()   # .../api/auth/discord/callback
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "").rstrip("/")              # where to send people after login
+DISCORD_ADMIN_IDS = {x.strip() for x in os.environ.get("DISCORD_ADMIN_IDS", "").split(",") if x.strip()}
+
+
+def _discord_enabled() -> bool:
+    return bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET and DISCORD_REDIRECT_URI)
+
+
+def _discord_http(method: str, url: str, form: Optional[dict] = None, token: Optional[str] = None):
+    import json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    headers = {"User-Agent": "BRStats (login, 1.0)"}
+    data = None
+    if form is not None:
+        data = urllib.parse.urlencode(form).encode()
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:
+        return e.code, None
+
+
+def _set_session_cookie(response: Response, token: str):
+    response.set_cookie(key="access_token", value=token, httponly=True,
+                        secure=True, samesite="none", max_age=7 * 24 * 3600, path="/")
+
+
+@api_router.get("/auth/discord/enabled")
+async def discord_login_enabled():
+    return {"enabled": _discord_enabled()}
+
+
+@api_router.get("/auth/discord/login")
+async def discord_login(request: Request):
+    import secrets
+    import urllib.parse
+    if not _discord_enabled():
+        raise HTTPException(400, "Discord login isn't set up (see DISCORD_CLIENT_ID in backend/.env)")
+    state = secrets.token_urlsafe(24)
+    url = "https://discord.com/oauth2/authorize?" + urllib.parse.urlencode({
+        "client_id": DISCORD_CLIENT_ID, "redirect_uri": DISCORD_REDIRECT_URI,
+        "response_type": "code", "scope": "identify", "state": state, "prompt": "none",
+    })
+    resp = RedirectResponse(url, status_code=302)
+    resp.set_cookie("discord_oauth_state", state, httponly=True, samesite="lax", max_age=600, path="/",
+                    secure=DISCORD_REDIRECT_URI.startswith("https://"))
+    return resp
+
+
+@api_router.get("/auth/discord/callback")
+async def discord_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None,
+                           error: Optional[str] = None):
+    front = FRONTEND_URL or str(request.base_url).rstrip("/")
+    def fail(reason: str):
+        r = RedirectResponse(f"{front}/login?discord_error={reason}", status_code=302)
+        r.delete_cookie("discord_oauth_state", path="/")
+        return r
+    if error:
+        return fail("cancelled")
+    expected = request.cookies.get("discord_oauth_state")
+    if not code or not state or not expected or not hmac.compare_digest(state, expected):
+        return fail("expired")
+    loop = asyncio.get_running_loop()
+    status, tok = await loop.run_in_executor(None, _discord_http, "POST", "https://discord.com/api/oauth2/token", {
+        "client_id": DISCORD_CLIENT_ID, "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code", "code": code, "redirect_uri": DISCORD_REDIRECT_URI,
+    }, None)
+    if status >= 300 or not tok or not tok.get("access_token"):
+        return fail("token")
+    status, du = await loop.run_in_executor(None, _discord_http, "GET", "https://discord.com/api/users/@me",
+                                            None, tok["access_token"])
+    if status >= 300 or not du or not du.get("id"):
+        return fail("profile")
+    return await _finish_discord_login(du, front)
+
+
+async def _finish_discord_login(du: dict, front: str):
+    discord_id = str(du["id"])
+    display = du.get("global_name") or du.get("username") or "Discord user"
+    role = "admin" if discord_id in DISCORD_ADMIN_IDS else "player"
+    user = await db.users.find_one({"discord_id": discord_id}, {"_id": 0})
+    if user:
+        upd = {"name": display, "discord_name": du.get("username"), "discord_avatar": du.get("avatar")}
+        if discord_id in DISCORD_ADMIN_IDS:
+            upd["role"] = "admin"
+        elif user.get("role") == "admin":
+            upd["role"] = "player"  # removed from DISCORD_ADMIN_IDS
+        await db.users.update_one({"id": user["id"]}, {"$set": upd})
+        user = {**user, **upd}
+    else:
+        user = {"id": str(uuid.uuid4()), "email": f"discord:{discord_id}", "name": display, "role": role,
+                "discord_id": discord_id, "discord_name": du.get("username"), "discord_avatar": du.get("avatar"),
+                "created_at": _now_iso()}
+        await db.users.insert_one({**user})
+    linked = await db.players.find_one({"discord_id": discord_id}, {"_id": 0, "id": 1})
+    resp = RedirectResponse(f"{front}/me" if linked else f"{front}/me?setup=1", status_code=302)
+    _set_session_cookie(resp, create_access_token(user["id"], user["email"]))
+    resp.delete_cookie("discord_oauth_state", path="/")
+    return resp
+
+
+async def _discord_user_required(request: Request) -> dict:
+    user = await get_current_user(request)
+    if not user.get("discord_id"):
+        raise HTTPException(400, "Log in with Discord to use this")
+    return user
+
+
+@api_router.get("/me")
+async def my_profile(user: dict = Depends(get_current_user)):
+    out = {"user": user, "player": None, "link_request": None, "stats": None}
+    if not user.get("discord_id"):
+        return out
+    player = await db.players.find_one({"discord_id": user["discord_id"]}, {"_id": 0})
+    out["player"] = player
+    if player:
+        season = await get_active_ranked_season()
+        if season:
+            played = [r for r in await leaderboard(season_id=season["id"]) if r["matches"]]
+            row = next((r for r in played if r["player_id"] == player["id"]), None)
+            out["stats"] = {"season": season["name"], **(row or {})}
+            if row:
+                out["stats"]["rank"] = played.index(row) + 1  # same numbering as the bot
+    else:
+        out["link_request"] = await db.link_requests.find_one(
+            {"discord_id": user["discord_id"], "status": "pending"}, {"_id": 0})
+    return out
+
+
+class MyLinkInput(BaseModel):
+    player_name: str
+
+
+@api_router.post("/me/link")
+async def my_link(data: MyLinkInput, user: dict = Depends(_discord_user_required)):
+    """Discord-verified link: a new name is created and linked at once; an existing
+    player needs an admin to approve (Discord proves who you are, not that you own that name)."""
+    name = " ".join(data.player_name.split())
+    if not 1 <= len(name) <= 30:
+        raise HTTPException(400, "Player names must be 1-30 characters")
+    did = user["discord_id"]
+    if await db.players.find_one({"discord_id": did}):
+        raise HTTPException(409, "You're already linked to a player")
+    existing = await _find_player_by_name(name)
+    if existing and existing.get("discord_id"):
+        raise HTTPException(409, f"{existing['name']} is already linked to another Discord account")
+    await db.link_requests.update_many({"discord_id": did, "status": "pending"},
+                                       {"$set": {"status": "superseded", "decided_at": _now_iso()}})
+    if not existing:
+        player = {"id": str(uuid.uuid4()), "name": name, "created_at": _now_iso(),
+                  "created_via": "discord-login", "discord_id": did, "discord_name": user.get("discord_name") or ""}
+        await db.players.insert_one({**player})
+        return {"linked": True, "player": player}
+    req = {"id": str(uuid.uuid4()), "discord_id": did, "discord_name": user.get("discord_name") or user["name"],
+           "player_id": existing["id"], "player_name": existing["name"], "new_player": False,
+           "status": "pending", "source": "website", "created_at": _now_iso()}
+    await db.link_requests.insert_one({**req})
+    req.pop("_id", None)
+    return {"linked": False, "link_request": req}
 
 
 # --------- Champions ---------

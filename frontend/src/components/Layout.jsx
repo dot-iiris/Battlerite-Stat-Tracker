@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/AuthContext";
-import { Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox } from "lucide-react";
+import { Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle } from "lucide-react";
 
 const links = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
@@ -14,13 +14,14 @@ const links = [
   { to: "/matchmaking", label: "Matchmaking", icon: Sliders, testid: "nav-matchmaking" },
   { to: "/recap", label: "Recap", icon: FileBarChart2, testid: "nav-recap" },
   { to: "/seasons", label: "Seasons", icon: Calendar, testid: "nav-seasons" },
+  { to: "/me", label: "My Profile", icon: UserCircle, testid: "nav-me", discordOnly: true },
 ];
 
 export default function Layout({ children }) {
   const { user, logout, isAdmin, isGuest } = useAuth();
   const nav = useNavigate();
 
-  const visibleLinks = links.filter((l) => !l.adminOnly || isAdmin);
+  const visibleLinks = links.filter((l) => (!l.adminOnly || isAdmin) && (!l.discordOnly || user?.discord_id));
 
   return (
     <div className="min-h-screen bg-[#06080E] text-slate-100 flex flex-col">
@@ -35,7 +36,7 @@ export default function Layout({ children }) {
           </div>
           <div className="flex items-center gap-2">
             {!isGuest && user?.email && (
-              <span className="hidden md:inline font-mono-hud text-xs text-slate-400" data-testid="nav-user-email">{user.email}</span>
+              <span className="hidden md:inline font-mono-hud text-xs text-slate-400" data-testid="nav-user-email">{user.discord_id ? user.name : user.email}</span>
             )}
             {user?.role && (
               <span
