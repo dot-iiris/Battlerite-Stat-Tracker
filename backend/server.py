@@ -212,7 +212,7 @@ def compute_elo_delta(team_a_mmr: float, team_b_mmr: float,
 
 def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
                           team_a_rounds: int, team_b_rounds: int,
-                          placement_counts: dict = None) -> dict:
+                          placement_counts: dict = None, bonuses: bool = True) -> dict:
     """Compute per-player ELO deltas.
 
     Within the winning team the weaker player gains a larger share (bigger upset for them),
@@ -224,6 +224,9 @@ def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
     - Carry bonus: if a winning player's MMR exceeds the enemy average AND at least one of
       their teammates has an MMR below the enemy average, their gain is multiplied by
       CARRY_WIN_MULTIPLIER.
+
+    bonuses=False skips both (matches imported from the old site, which were scored
+    before these bonuses existed, keep their original MMR changes).
 
     Returns {player_id: {"delta": float, "placement_bonus": bool, "carry_bonus": bool}}.
     """
@@ -263,7 +266,7 @@ def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
         for pid, delta in base.items():
             placement_bonus = False
             carry_bonus = False
-            if won and delta > 0:
+            if won and delta > 0 and bonuses:
                 if placement_counts.get(pid, 0) < PLACEMENT_MATCHES:
                     delta *= PLACEMENT_WIN_MULTIPLIER
                     placement_bonus = True
@@ -782,7 +785,8 @@ async def recompute_season_elo(season_id: str):
                              for p in m["players"]}
         deltas = compute_player_deltas(ta_mmrs, tb_mmrs,
                                        m["team_a_rounds"], m["team_b_rounds"],
-                                       placement_counts=placement_counts)
+                                       placement_counts=placement_counts,
+                                       bonuses=not m.get("legacy_scoring"))
         new_players = []
         for p in m["players"]:
             key = rating_key(p)
