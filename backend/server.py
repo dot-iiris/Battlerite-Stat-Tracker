@@ -992,8 +992,10 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
     if existing["season_id"] != data.season_id:
         await recompute_season_elo(existing["season_id"])
     updated = await db.matches.find_one({"id": mid}, {"_id": 0})
-    if updated.get("discord_log"):
-        schedule_match_log(mid)  # keep its Discord match log post in step
+    # this post and every later one in the season (their MMR-after numbers may have moved)
+    schedule_match_log_resync(data.season_id, existing["played_at"])
+    if existing["season_id"] != data.season_id:
+        schedule_match_log_resync(existing["season_id"], existing["played_at"])
     return updated
 
 
@@ -1007,6 +1009,7 @@ async def delete_match(mid: str, user: dict = Depends(admin_required)):
     await recompute_season_elo(season_id)
     if existing.get("discord_log"):
         _spawn(remove_match_log(existing))
+    schedule_match_log_resync(season_id, existing["played_at"])   # later posts' MMR-after numbers
     return {"ok": True}
 
 
@@ -2483,6 +2486,25 @@ def _fmt_stat(v):
     return str(int(v)) if float(v).is_integer() else f"{v:g}"
 
 
+async def _mmr_after_match(m: dict) -> dict:
+    """Each player's MMR straight after this match (replays the season in order)."""
+    matches = await db.matches.find({"season_id": m["season_id"]}, {"_id": 0, "id": 1, "played_at": 1, "players": 1}) \
+        .sort("played_at", 1).to_list(100000)
+    adjs = await season_adjustments(m["season_id"])
+    rating, ai = {}, 0
+    for x in matches:
+        while ai < len(adjs) and adjs[ai]["at"] <= x["played_at"]:
+            k = rating_key(adjs[ai])
+            rating[k] = rating.get(k, BASE_MMR) + adjs[ai]["delta"]
+            ai += 1
+        for p in x["players"]:
+            k = rating_key(p)
+            rating[k] = rating.get(k, BASE_MMR) + (p.get("elo_delta") or 0)
+        if x["id"] == m["id"]:
+            return {rating_key(p): rating[rating_key(p)] for p in x["players"]}
+    return {}
+
+
 async def match_log_payload(m: dict) -> dict:
     ids = [p["player_id"] for p in m["players"]]
     names = {p["id"]: p["name"] for p in await db.players.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(20)}
@@ -2490,6 +2512,7 @@ async def match_log_payload(m: dict) -> dict:
     ranked = is_ranked_season(season) if season else True
     a, b = m["team_a_rounds"], m["team_b_rounds"]
     won = m.get("winner_team") or ("A" if a > b else "B")
+    after = await _mmr_after_match(m) if ranked else {}
 
     def lines(team):
         out = []
@@ -2498,11 +2521,16 @@ async def match_log_payload(m: dict) -> dict:
             if ranked:
                 d = p.get("elo_delta") or 0
                 row += f" · {'+' if d >= 0 else ''}{round(d, 1)}"
-            st = p.get("stats") or {}
-            if any(st.get(k) is not None for k in STAT_FIELDS):
-                row += "\n`" + " / ".join(_fmt_stat(st.get(k)) for k in ("score", "damage", "protection", "disables")) + "`"
+                final = after.get(rating_key(p))
+                if final is not None:
+                    row += f" → **{round(final)}**"
             out.append(row)
         return "\n".join(out) or "-"
+
+    def team_name(team):
+        avg = m.get("team_a_mmr_before" if team == "A" else "team_b_mmr_before")
+        label = f"Team {team}{' 🏆' if won == team else ''}"
+        return f"{label} · avg {round(avg)}" if ranked and avg else label
 
     num = f"Match #{m['discord_match_id']} — " if m.get("discord_match_id") else ""
     bits = [f"**Team {won} wins**", f"{m['format']} {'Ranked' if ranked else 'Unranked'}"]
@@ -2517,13 +2545,15 @@ async def match_log_payload(m: dict) -> dict:
         "description": " · ".join(bits),
         "color": 0x22C55E,
         "fields": [
-            {"name": f"Team A{' 🏆' if won == 'A' else ''}", "value": lines("A"), "inline": True},
-            {"name": f"Team B{' 🏆' if won == 'B' else ''}", "value": lines("B"), "inline": True},
+            {"name": team_name("A"), "value": lines("A"), "inline": True},
+            {"name": team_name("B"), "value": lines("B"), "inline": True},
         ],
-        "footer": {"text": "score / damage / protection / disables (round averages)"
-                           + (f" · submitted by {m['reported_by']}" if m.get("reported_by") else "")},
         "timestamp": m.get("played_at") or _now_iso(),
     }
+    foot = (["MMR change → MMR after the match", "avg = team MMR before"] if ranked else []) \
+        + ([f"submitted by {m['reported_by']}"] if m.get("reported_by") else [])
+    if foot:
+        embed["footer"] = {"text": " · ".join(foot)}
     if PUBLIC_SITE_URL:
         embed["url"] = f"{PUBLIC_SITE_URL}/matches?match={m['id']}"
     return {"embeds": [embed], "allowed_mentions": {"parse": []}}
@@ -2604,6 +2634,22 @@ async def match_log_backfill(user: dict = Depends(admin_required)):
         _backfill_running = True
         _spawn(_backfill_match_log([d["id"] for d in docs]))
     return {"queued": len(docs), "seconds": len(docs)}
+
+
+def schedule_match_log_resync(season_id: str, from_played_at: str):
+    if MATCH_LOG_WEBHOOK:
+        _spawn(_resync_match_log(season_id, from_played_at))
+
+
+async def _resync_match_log(season_id: str, from_played_at: str):
+    """Edit the posts of every logged match in a season from a point onwards."""
+    async with _match_log_lock:
+        docs = await db.matches.find({"season_id": season_id, "played_at": {"$gte": from_played_at},
+                                      "discord_log": {"$exists": True}}, {"_id": 0, "id": 1}) \
+            .sort("played_at", 1).to_list(100000)
+        for d in docs:
+            await _post_match_log(d["id"])
+            await asyncio.sleep(0.5)
 
 
 async def remove_match_log(m: dict):
