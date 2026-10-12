@@ -483,6 +483,7 @@ async def create_season(data: SeasonCreate, user: dict = Depends(admin_required)
     }
     await db.seasons.insert_one(doc)
     doc.pop("_id", None)
+    schedule_leaderboard_push()
     return doc
 
 @api_router.patch("/seasons/{sid}")
@@ -507,6 +508,7 @@ async def activate_season(sid: str, user: dict = Depends(admin_required)):
     result = await db.seasons.update_one({"id": sid}, {"$set": {"active": True}})
     if result.matched_count == 0:
         raise HTTPException(404, "Season not found")
+    schedule_leaderboard_push()
     return {"ok": True}
 
 @api_router.delete("/seasons/{sid}")
@@ -516,6 +518,7 @@ async def delete_season(sid: str, user: dict = Depends(admin_required)):
         raise HTTPException(400, "The Unranked season can't be deleted")
     await db.seasons.delete_one({"id": sid})
     await db.matches.delete_many({"season_id": sid})
+    schedule_leaderboard_push()
     return {"ok": True}
 
 
@@ -589,6 +592,7 @@ async def recompute_season_elo(season_id: str):
             "team_b_mmr_before": round(tb_avg, 2),
             "winner_team": "A" if m["team_a_rounds"] > m["team_b_rounds"] else "B",
         }})
+    schedule_leaderboard_push()
 
 
 async def get_player_mmr(player_id: str, season_id: str) -> float:
@@ -687,6 +691,7 @@ async def create_match(data: MatchCreate, user: dict = Depends(admin_required)):
     }
     await db.matches.insert_one(doc)
     doc.pop("_id", None)
+    schedule_leaderboard_push()
     return doc
 
 
@@ -1826,6 +1831,105 @@ async def set_player_ign(pid: str, data: IgnInput, user: dict = Depends(admin_or
     else:
         await db.players.update_one({"id": pid}, {"$unset": {"ign": ""}})
     return await db.players.find_one({"id": pid}, {"_id": 0, "discord_id": 0})
+
+
+# --------- Discord leaderboard push ---------
+# Set DISCORD_LEADERBOARD_WEBHOOK_URL (Discord: channel settings > Integrations >
+# Webhooks > New Webhook > Copy URL) and the website keeps one leaderboard post in
+# that channel up to date, editing it right after any change to matches or seasons.
+LEADERBOARD_WEBHOOK = os.environ.get("DISCORD_LEADERBOARD_WEBHOOK_URL", "").strip()
+LEADERBOARD_SIZE = int(os.environ.get("DISCORD_LEADERBOARD_SIZE") or 25)
+PUBLIC_SITE_URL = os.environ.get("PUBLIC_SITE_URL", "").rstrip("/")
+_lb_task: Optional[asyncio.Task] = None
+_lb_again = False
+
+
+def schedule_leaderboard_push():
+    """Ask for a leaderboard refresh. Rapid changes are batched into one Discord edit."""
+    global _lb_task, _lb_again
+    if not LEADERBOARD_WEBHOOK:
+        return
+    if _lb_task and not _lb_task.done():
+        _lb_again = True
+        return
+    _lb_task = asyncio.get_running_loop().create_task(_leaderboard_push_worker())
+
+
+async def _leaderboard_push_worker():
+    global _lb_again
+    while True:
+        _lb_again = False
+        await asyncio.sleep(2)  # let a burst of edits settle
+        try:
+            await push_leaderboard()
+        except Exception:
+            logging.getLogger(__name__).exception("Leaderboard push failed")
+        if not _lb_again:
+            return
+
+
+def _webhook_call(method: str, url: str, payload: Optional[dict]):
+    import json
+    import urllib.request
+    import urllib.error
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Content-Type": "application/json", "User-Agent": "BRStats (leaderboard, 1.0)"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read()
+            return r.status, (json.loads(body) if body else None)
+    except urllib.error.HTTPError as e:
+        return e.code, None
+
+
+def leaderboard_payload(rows: list, season_name: str) -> dict:
+    played = [r for r in rows if r["matches"]][:LEADERBOARD_SIZE]
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = []
+    for pos, r in enumerate(played, 1):
+        hot = f" 🔥{r['streak']}" if r.get("streak", 0) >= 3 else ""
+        place = medals.get(pos) or "`#{:>2}`".format(pos)
+        lines.append(f"{place} **{r['name']}** · {round(r['mmr'])} MMR · {r['wins']}-{r['losses']} ({r['winrate']}%){hot}")
+    embed = {
+        "title": f"🏆 BR Stats leaderboard — {season_name}",
+        "description": "\n".join(lines) or "No ranked matches this season yet.",
+        "color": 0x22D3EE,
+        "footer": {"text": "Updates automatically when a match is logged"},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if PUBLIC_SITE_URL:
+        embed["url"] = f"{PUBLIC_SITE_URL}/leaderboard"
+    return {"embeds": [embed], "allowed_mentions": {"parse": []}}
+
+
+async def push_leaderboard():
+    season = await get_active_ranked_season()
+    rows = await leaderboard(season_id=season["id"]) if season else []
+    payload = leaderboard_payload(rows, season["name"] if season else "no active season")
+    state = await db.settings.find_one({"id": "leaderboard_post"}) or {}
+    loop = asyncio.get_running_loop()
+    if state.get("message_id") and state.get("webhook") == LEADERBOARD_WEBHOOK:
+        status, _ = await loop.run_in_executor(None, _webhook_call, "PATCH",
+                                               f"{LEADERBOARD_WEBHOOK}/messages/{state['message_id']}", payload)
+        if status < 300:
+            return
+    # first post, webhook changed, or the old post was deleted: post a new one
+    status, msg = await loop.run_in_executor(None, _webhook_call, "POST", f"{LEADERBOARD_WEBHOOK}?wait=true", payload)
+    if status < 300 and msg:
+        await db.settings.update_one({"id": "leaderboard_post"}, {"$set": {
+            "id": "leaderboard_post", "message_id": msg["id"], "webhook": LEADERBOARD_WEBHOOK,
+        }}, upsert=True)
+    else:
+        logging.getLogger(__name__).warning("Discord webhook returned %s", status)
+
+
+@api_router.post("/admin/push-leaderboard")
+async def push_leaderboard_now(user: dict = Depends(admin_required)):
+    if not LEADERBOARD_WEBHOOK:
+        raise HTTPException(400, "DISCORD_LEADERBOARD_WEBHOOK_URL isn't set in backend/.env")
+    await push_leaderboard()
+    return {"ok": True}
 
 
 # --------- Scoreboard stat normalisation (derived, never stored) ---------
