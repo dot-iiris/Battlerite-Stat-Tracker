@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# BR Stats - install your settings, bot and data, then start everything.
+# Usage: sudo brstats-finish /tmp/brstats-upload.zip [--replace-db]
+# The zip is made by upload-to-oracle.bat on your PC and contains:
+#   backend.env        the website's live settings (secrets)
+#   bot/               the Discord bot, with its .env
+#   db.jsonl.gz        a copy of your database (optional)
+set -euo pipefail
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+APP=/opt/brstats
+SITE=$APP/site
+ZIP="${1:?Usage: sudo brstats-finish <upload.zip> [--replace-db]}"
+REPLACE_DB="${2:-}"
+log() { echo "==> $*"; }
+as_app() { sudo -u brstats -H env HOME="$APP" "$@"; }
+
+if [ ! -f "$APP/.setup-done" ]; then
+  log "Waiting for first-boot setup to finish (this can take ~10 minutes)..."
+  cloud-init status --wait >/dev/null 2>&1 || true
+  [ -f "$APP/.setup-done" ] || { echo "Setup didn't finish - check /var/log/cloud-init-output.log"; exit 1; }
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+unzip -q "$ZIP" -d "$tmp"
+
+log "Website settings"
+[ -f "$tmp/backend.env" ] || { echo "backend.env missing from the zip"; exit 1; }
+# this server's own database, whatever the PC used
+grep -vE '^\s*(MONGO_URL|DB_NAME)\s*=' "$tmp/backend.env" > "$tmp/backend.env.clean" || true
+db_name=$(grep -E '^\s*DB_NAME\s*=' "$tmp/backend.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r')
+{ cat "$tmp/backend.env.clean"; echo; echo "MONGO_URL=mongodb://127.0.0.1:27017"; echo "DB_NAME=${db_name:-brstats}"; } \
+  | tr -d '\r' > "$APP/backend.env"
+chown brstats:brstats "$APP/backend.env"
+chmod 600 "$APP/backend.env"
+
+if [ -d "$tmp/bot" ]; then
+  log "Discord bot"
+  mkdir -p "$APP/bot"
+  cp -r "$tmp/bot/." "$APP/bot/"
+  find "$APP/bot" -maxdepth 1 -name '.env' -exec sed -i 's/\r$//' {} \;
+  chown -R brstats:brstats "$APP/bot"
+  [ -f "$APP/bot/.env" ] && chmod 600 "$APP/bot/.env"
+  [ -x "$APP/bot/.venv/bin/python" ] || as_app python3 -m venv "$APP/bot/.venv"
+  as_app "$APP/bot/.venv/bin/pip" install -q --disable-pip-version-check -r "$APP/bot/requirements.txt"
+fi
+
+if [ -f "$tmp/db.jsonl.gz" ]; then
+  log "Database"
+  systemctl stop brstats-bot brstats-api 2>/dev/null || true
+  args=()
+  [ "$REPLACE_DB" = "--replace-db" ] && args+=(--replace)
+  if "$APP/venv/bin/python" "$SITE/deploy/db_transfer.py" import "$tmp/db.jsonl.gz" --env "$APP/backend.env" "${args[@]}"; then
+    :
+  else
+    code=$?
+    if [ $code -eq 3 ]; then
+      echo "    The server already has data, so it was left alone. Run again with --replace-db to overwrite it."
+    else
+      exit $code
+    fi
+  fi
+fi
+
+log "Starting the website"
+systemctl enable --now brstats-api
+systemctl restart brstats-api
+for i in $(seq 1 60); do
+  curl -fs http://127.0.0.1:9101/api/seasons >/dev/null && break
+  sleep 2
+done
+curl -fs http://127.0.0.1:9101/api/seasons >/dev/null && log "API is answering" \
+  || { echo "API isn't answering - see: journalctl -u brstats-api -n 50"; exit 1; }
+
+if [ -f "$APP/bot/bot.py" ]; then
+  systemctl enable --now brstats-bot
+  systemctl restart brstats-bot
+  log "Bot started"
+fi
+
+DOMAIN=$(grep -E '^PUBLIC_SITE_URL=' "$APP/backend.env" | sed -E 's#^PUBLIC_SITE_URL=https?://##; s#/.*##')
+my_ip=$(curl -fs4 https://ifconfig.me || true)
+dns_ip=$(getent ahostsv4 "$DOMAIN" | awk 'NR==1{print $1}' || true)
+if [ -n "$DOMAIN" ] && [ -n "$my_ip" ] && [ "$my_ip" = "$dns_ip" ]; then
+  if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
+    log "Getting an HTTPS certificate for $DOMAIN"
+    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect \
+      || echo "    certbot failed - check ports 80/443 are open in Oracle's security list, then run: sudo certbot --nginx -d $DOMAIN"
+  fi
+  log "Live at https://$DOMAIN"
+else
+  echo "    $DOMAIN points to ${dns_ip:-nothing}, this server is ${my_ip:-unknown}."
+  echo "    Point the DNS record at ${my_ip:-this server}, wait a few minutes, then run:"
+  echo "      sudo certbot --nginx -d ${DOMAIN:-br.iarhm.xyz} --agree-tos --register-unsafely-without-email --redirect"
+  echo "    Until then the site works at http://${my_ip:-<server ip>}"
+fi
+rm -f "$ZIP"   # it holds your secrets

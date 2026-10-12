@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# BR Stats - pull the latest code, rebuild and restart.   Usage: sudo brstats-update
+#   --no-pull   rebuild what's already there
+set -euo pipefail
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+APP=/opt/brstats
+SITE=$APP/site
+as_app() { sudo -u brstats -H env HOME="$APP" "$@"; }
+log() { echo "==> $*"; }
+
+if [ "${1:-}" != "--no-pull" ]; then
+  log "Pulling the latest code"
+  as_app git -C "$SITE" pull --ff-only
+fi
+
+log "Backend packages"
+[ -x "$APP/venv/bin/python" ] || as_app python3 -m venv "$APP/venv"
+as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check --upgrade pip
+as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check -r "$SITE/deploy/requirements-server.txt"
+
+log "Building the website"
+as_app tee "$SITE/frontend/.env.production.local" >/dev/null <<'EOF'
+REACT_APP_BACKEND_URL=
+DISABLE_EMERGENT_OVERLAY=true
+ENABLE_HEALTH_CHECK=false
+GENERATE_SOURCEMAP=false
+EOF
+cd "$SITE/frontend"
+as_app npx --yes yarn@1.22.22 install --network-timeout 600000
+as_app npx --yes yarn@1.22.22 build
+
+if [ -f "$APP/bot/requirements.txt" ]; then
+  log "Bot packages"
+  [ -x "$APP/bot/.venv/bin/python" ] || as_app python3 -m venv "$APP/bot/.venv"
+  as_app "$APP/bot/.venv/bin/pip" install -q --disable-pip-version-check -r "$APP/bot/requirements.txt"
+fi
+
+for s in brstats-api brstats-bot; do
+  if systemctl is-enabled --quiet "$s" 2>/dev/null; then
+    systemctl restart "$s"
+    log "Restarted $s"
+  fi
+done
+log "Done"
