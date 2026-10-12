@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
+import { prefetchPage } from "@/api";
 import { useAuth } from "@/AuthContext";
 import { Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle } from "lucide-react";
 
@@ -23,27 +23,30 @@ export default function Layout({ children }) {
   const nav = useNavigate();
 
   const visibleLinks = links.filter((l) => (!l.adminOnly || isAdmin) && (!l.discordOnly || user?.discord_id));
-  const navRef = useRef(null);
-  const location = useLocation();
+  const mainLinks = visibleLinks.filter((l) => !l.adminOnly);
+  const adminLinks = visibleLinks.filter((l) => l.adminOnly);
 
-  // Mouse wheel scrolls the tab bar sideways when it doesn't all fit
-  useEffect(() => {
-    const el = navRef.current;
-    if (!el) return undefined;
-    const onWheel = (e) => {
-      if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
-      e.preventDefault();
-      el.scrollLeft += e.deltaY;
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, []);
-
-  // Keep the current page's tab in view
-  useEffect(() => {
-    const active = navRef.current?.querySelector('[aria-current="page"]');
-    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [location.pathname]);
+  const tab = (l) => (
+    <NavLink
+      key={l.to}
+      to={l.to}
+      end={l.to === "/"}
+      data-testid={l.testid}
+      onMouseEnter={() => prefetchPage(l.to, { isAdmin })}
+      onFocus={() => prefetchPage(l.to, { isAdmin })}
+      onTouchStart={() => prefetchPage(l.to, { isAdmin })}
+      className={({ isActive }) =>
+        `flex items-center gap-2 px-4 py-3 text-xs font-mono-hud uppercase tracking-wider whitespace-nowrap border-b-2 transition-colors ${
+          isActive
+            ? "text-cyan-400 border-cyan-400"
+            : "text-slate-400 border-transparent hover:text-slate-100"
+        }`
+      }
+    >
+      <l.icon className="w-3.5 h-3.5" />
+      {l.label}
+    </NavLink>
+  );
 
   return (
     <div className="min-h-screen bg-[#06080E] text-slate-100 flex flex-col">
@@ -82,27 +85,18 @@ export default function Layout({ children }) {
           </div>
         </div>
         <nav className="border-t border-[#1B2438]">
-          <div ref={navRef} className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex gap-1 overflow-x-auto">
-            {visibleLinks.map((l) => (
-              <NavLink
-                key={l.to}
-                to={l.to}
-                end={l.to === "/"}
-                data-testid={l.testid}
-                className={({ isActive }) =>
-                  `flex items-center gap-2 px-4 py-3 text-xs font-mono-hud uppercase tracking-wider whitespace-nowrap border-b-2 transition-colors ${
-                    isActive
-                      ? "text-cyan-400 border-cyan-400"
-                      : "text-slate-400 border-transparent hover:text-slate-100"
-                  }`
-                }
-              >
-                <l.icon className="w-3.5 h-3.5" />
-                {l.label}
-              </NavLink>
-            ))}
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap gap-x-1">
+            {mainLinks.map(tab)}
           </div>
         </nav>
+        {adminLinks.length > 0 && (
+          <nav className="border-t border-[#1B2438] bg-[#FFB800]/[0.03]" data-testid="nav-admin">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap items-center gap-x-1">
+              <span className="pr-2 text-[10px] font-mono-hud uppercase tracking-[0.2em] text-[#FFB800]/70">Admin</span>
+              {adminLinks.map(tab)}
+            </div>
+          </nav>
+        )}
       </header>
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {children}
