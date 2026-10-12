@@ -649,6 +649,11 @@ async def list_seasons():
 
 @api_router.post("/seasons")
 async def create_season(data: SeasonCreate, user: dict = Depends(admin_required)):
+    data.name = " ".join(data.name.split())
+    if not data.name:
+        raise HTTPException(400, "Season name can't be empty")
+    if data.name.lower() == UNRANKED_SEASON_NAME.lower():
+        raise HTTPException(400, f"'{UNRANKED_SEASON_NAME}' is reserved")
     # Deactivate others
     await db.seasons.update_many({}, {"$set": {"active": False}})
     doc = {
@@ -665,13 +670,24 @@ async def create_season(data: SeasonCreate, user: dict = Depends(admin_required)
 
 @api_router.patch("/seasons/{sid}")
 async def update_season(sid: str, data: SeasonUpdate, user: dict = Depends(admin_required)):
-    upd = {k: v for k, v in data.model_dump().items() if v is not None}
+    # fields that were sent; end_date may be sent as null to remove it
+    upd = data.model_dump(exclude_unset=True)
+    if "name" in upd:
+        upd["name"] = " ".join((upd["name"] or "").split())
+        if not upd["name"]:
+            raise HTTPException(400, "Season name can't be empty")
+        if upd["name"].lower() == UNRANKED_SEASON_NAME.lower():
+            raise HTTPException(400, f"'{UNRANKED_SEASON_NAME}' is reserved")
     if not upd:
         raise HTTPException(400, "Nothing to update")
+    target = await db.seasons.find_one({"id": sid}, {"_id": 0})
+    if target and not is_ranked_season(target):
+        raise HTTPException(400, "The Unranked season can't be edited")
     result = await db.seasons.update_one({"id": sid}, {"$set": upd})
     if result.matched_count == 0:
         raise HTTPException(404, "Season not found")
     doc = await db.seasons.find_one({"id": sid}, {"_id": 0})
+    schedule_leaderboard_push()   # the post shows the season name
     return doc
 
 @api_router.post("/seasons/{sid}/activate")

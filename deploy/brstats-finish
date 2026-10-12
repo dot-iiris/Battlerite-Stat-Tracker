@@ -22,7 +22,22 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-unzip -q "$ZIP" -d "$tmp"
+# python instead of unzip: zips made on Windows can use backslashes in paths
+python3 - "$ZIP" "$tmp" <<'PY'
+import os, sys, zipfile
+dest = os.path.realpath(sys.argv[2])
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for info in z.infolist():
+        name = info.filename.replace("\\", "/")
+        if name.endswith("/"):
+            continue
+        path = os.path.realpath(os.path.join(dest, name))
+        if not path.startswith(dest + os.sep):
+            sys.exit(f"Unsafe path in zip: {name}")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(z.read(info))
+PY
 
 log "Website settings"
 [ -f "$tmp/backend.env" ] || { echo "backend.env missing from the zip"; exit 1; }

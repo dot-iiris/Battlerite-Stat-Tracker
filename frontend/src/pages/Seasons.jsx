@@ -5,12 +5,19 @@ import { Calendar, Plus, CheckCircle, Trash2, Pencil } from "lucide-react";
 import SeasonCountdown from "@/components/SeasonCountdown";
 import { useAuth } from "@/AuthContext";
 
+// ISO date -> value for a datetime-local input, in the viewer's own timezone
+function toLocalInput(iso) {
+  const d = new Date(iso);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
 export default function Seasons() {
   const [seasons, setSeasons] = useState([]);
   const [name, setName] = useState("");
   const [endDate, setEndDate] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editEnd, setEditEnd] = useState("");
+  const [editName, setEditName] = useState("");
   const { isAdmin } = useAuth();
 
   const load = async () => {
@@ -35,14 +42,21 @@ export default function Seasons() {
     }
   };
 
-  const saveEndDate = async (id) => {
+  const startEdit = (s) => {
+    setEditingId(s.id);
+    setEditName(s.name);
+    setEditEnd(s.end_date ? toLocalInput(s.end_date) : "");
+  };
+
+  const saveEdit = async (id) => {
+    if (!editName.trim()) return toast.error("Give the season a name");
     try {
-      await api.patch(`/seasons/${id}`, { end_date: editEnd ? new Date(editEnd).toISOString() : null });
-      toast.success("End date updated");
+      await api.patch(`/seasons/${id}`, { name: editName.trim(), end_date: editEnd ? new Date(editEnd).toISOString() : null });
+      toast.success("Season updated");
       setEditingId(null);
       load();
     } catch (err) {
-      toast.error("Failed");
+      toast.error(err?.response?.data?.detail || "Failed");
     }
   };
 
@@ -93,29 +107,33 @@ export default function Seasons() {
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-heading text-lg font-bold uppercase">{s.name}</span>
                 {s.active && <span className="text-[10px] font-mono-hud uppercase tracking-wider px-2 py-0.5 bg-cyan-400/10 border border-cyan-400 text-cyan-400 rounded">ACTIVE</span>}
+                {s.ranked === false && <span className="text-[10px] font-mono-hud uppercase tracking-wider px-2 py-0.5 border border-slate-600 text-slate-400 rounded">No MMR</span>}
                 {s.end_date && <SeasonCountdown endDate={s.end_date} seasonName={s.name} compact />}
               </div>
               <div className="text-xs font-mono-hud text-slate-500 mt-1">Created {new Date(s.created_at).toLocaleDateString()}{s.end_date ? ` · Ends ${new Date(s.end_date).toLocaleDateString()}` : ""}</div>
               {editingId === s.id && (
-                <div className="flex gap-2 mt-2">
+                <div className="flex flex-wrap gap-2 mt-2 items-center">
+                  <input value={editName} onChange={(e) => setEditName(e.target.value)} maxLength={60} placeholder="Season name"
+                    className="bg-[#121828] border border-[#1B2438] rounded px-2 py-1 text-xs" data-testid={`season-edit-name-${s.id}`} />
                   <input type="datetime-local" value={editEnd} onChange={(e) => setEditEnd(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-2 py-1 text-xs" data-testid={`season-edit-end-${s.id}`} />
-                  <button onClick={() => saveEndDate(s.id)} className="text-xs font-mono-hud text-cyan-400 border border-cyan-400 px-2 py-1 rounded" data-testid={`season-save-end-${s.id}`}>Save</button>
+                  {editEnd && <button onClick={() => setEditEnd("")} className="text-xs text-slate-500 hover:text-white">No end date</button>}
+                  <button onClick={() => saveEdit(s.id)} className="text-xs font-mono-hud text-cyan-400 border border-cyan-400 px-2 py-1 rounded" data-testid={`season-save-end-${s.id}`}>Save</button>
                   <button onClick={() => setEditingId(null)} className="text-xs text-slate-500">Cancel</button>
                 </div>
               )}
             </div>
             <div className="flex items-center gap-2">
-              {isAdmin && (
-                <button onClick={() => { setEditingId(s.id); setEditEnd(s.end_date ? new Date(s.end_date).toISOString().slice(0, 16) : ""); }} className="text-slate-500 hover:text-cyan-400 p-1.5" data-testid={`season-edit-${s.id}`}>
+              {isAdmin && s.ranked !== false && (
+                <button onClick={() => startEdit(s)} title="Rename / change end date" className="text-slate-500 hover:text-cyan-400 p-1.5" data-testid={`season-edit-${s.id}`}>
                   <Pencil className="w-4 h-4" />
                 </button>
               )}
-              {isAdmin && !s.active && (
+              {isAdmin && !s.active && s.ranked !== false && (
                 <button onClick={() => activate(s.id)} className="text-xs font-mono-hud uppercase tracking-wider px-3 py-1.5 border border-[#1B2438] hover:border-cyan-400 hover:text-cyan-400 rounded flex items-center gap-1" data-testid={`season-activate-${s.id}`}>
                   <CheckCircle className="w-3.5 h-3.5" /> Activate
                 </button>
               )}
-              {isAdmin && (
+              {isAdmin && s.ranked !== false && (
                 <button onClick={() => del(s.id)} className="text-slate-500 hover:text-[#FF2E55] p-1.5" data-testid={`season-delete-${s.id}`}>
                   <Trash2 className="w-4 h-4" />
                 </button>

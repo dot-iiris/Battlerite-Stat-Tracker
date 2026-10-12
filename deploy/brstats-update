@@ -13,6 +13,10 @@ if [ "${1:-}" != "--no-pull" ]; then
   as_app git -C "$SITE" pull --ff-only
 fi
 
+# keep the helper commands in step with the code
+install -m 755 "$SITE/deploy/brstats-update" /usr/local/bin/brstats-update
+install -m 755 "$SITE/deploy/brstats-finish" /usr/local/bin/brstats-finish
+
 log "Backend packages"
 [ -x "$APP/venv/bin/python" ] || as_app python3 -m venv "$APP/venv"
 as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check --upgrade pip
