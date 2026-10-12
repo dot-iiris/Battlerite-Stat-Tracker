@@ -942,6 +942,8 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
     if existing["season_id"] != data.season_id:
         await recompute_season_elo(existing["season_id"])
     updated = await db.matches.find_one({"id": mid}, {"_id": 0})
+    if updated.get("discord_log"):
+        schedule_match_log(mid)  # keep its Discord match log post in step
     return updated
 
 
@@ -953,6 +955,8 @@ async def delete_match(mid: str, user: dict = Depends(admin_required)):
     season_id = existing["season_id"]
     await db.matches.delete_one({"id": mid})
     await recompute_season_elo(season_id)
+    if existing.get("discord_log"):
+        _spawn(remove_match_log(existing))
     return {"ok": True}
 
 
@@ -1865,6 +1869,7 @@ class PendingMatchCreate(BaseModel):
     confirmed_by: Optional[str] = None
     source: str = "discord"
     source_ref: Optional[str] = None   # e.g. link to the Discord message
+    discord_match_id: Optional[str] = None  # the bot's match number, shown in the match log
     notes: Optional[str] = ""
     played_at: Optional[str] = None
 
@@ -1920,6 +1925,7 @@ async def create_pending_match(data: PendingMatchCreate, user: dict = Depends(ad
         "confirmed_by": data.confirmed_by,
         "source": data.source,
         "source_ref": data.source_ref,
+        "discord_match_id": data.discord_match_id,
         "notes": data.notes or "",
         "played_at": data.played_at or _now_iso(),
         "created_at": _now_iso(),
@@ -1990,6 +1996,8 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
     match = await create_match(match_in, user)
     await db.matches.update_one({"id": match["id"]}, {"$set": {
         "source": pm.get("source"), "source_ref": pm.get("source_ref"), "map": pm.get("map"),
+        "balance_mode": pm.get("balance_mode"), "reported_by": pm.get("reported_by"),
+        "discord_match_id": pm.get("discord_match_id"),
         "pending_match_id": pmid,
         "screenshot_id": pmid if pm.get("screenshot") else None,
     }})
@@ -2002,6 +2010,7 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
     await db.pending_matches.update_one({"id": pmid}, {"$set": {
         "status": "completed", "match_id": match["id"], "completed_at": _now_iso(),
     }})
+    schedule_match_log(match["id"])  # post the confirmed result to the Discord match log
     return await db.matches.find_one({"id": match["id"]}, {"_id": 0})
 
 
@@ -2220,7 +2229,7 @@ def _webhook_call(method: str, url: str, payload: Optional[dict]):
     import urllib.error
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json", "User-Agent": "BRStats (leaderboard, 1.0)"})
+                                 headers={"Content-Type": "application/json", "User-Agent": "BRStats (webhooks, 1.0)"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             body = r.read()
@@ -2276,6 +2285,116 @@ async def push_leaderboard_now(user: dict = Depends(admin_required)):
         raise HTTPException(400, "DISCORD_LEADERBOARD_WEBHOOK_URL isn't set in backend/.env")
     await push_leaderboard()
     return {"ok": True}
+
+
+# --------- Discord match log ---------
+# Set DISCORD_MATCH_LOG_WEBHOOK_URL and every match an admin logs from the Pending
+# page (i.e. confirmed /submit results) is posted to that channel. Editing the match
+# on the website edits the post; deleting the match deletes it.
+MATCH_LOG_WEBHOOK = os.environ.get("DISCORD_MATCH_LOG_WEBHOOK_URL", "").strip()
+BALANCE_MODE_NAMES = {"hybrid": "Hybrid Balance", "synergy": "Role Synergy", "mmr": "MMR Balance"}
+_bg_tasks: set = set()
+
+
+def _spawn(coro):
+    """Run a webhook call in the background so admin pages never wait on Discord."""
+    async def guarded():
+        try:
+            await coro
+        except Exception:
+            logging.getLogger(__name__).exception("Discord match log failed")
+    t = asyncio.get_running_loop().create_task(guarded())
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+
+
+def schedule_match_log(mid: str):
+    if MATCH_LOG_WEBHOOK:
+        _spawn(post_match_log(mid))
+
+
+def _fmt_stat(v):
+    if v is None:
+        return "—"
+    return str(int(v)) if float(v).is_integer() else f"{v:g}"
+
+
+async def match_log_payload(m: dict) -> dict:
+    ids = [p["player_id"] for p in m["players"]]
+    names = {p["id"]: p["name"] for p in await db.players.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(20)}
+    season = await db.seasons.find_one({"id": m["season_id"]}, {"_id": 0}) or {}
+    ranked = is_ranked_season(season) if season else True
+    a, b = m["team_a_rounds"], m["team_b_rounds"]
+    won = m.get("winner_team") or ("A" if a > b else "B")
+
+    def lines(team):
+        out = []
+        for p in [x for x in m["players"] if x["team"] == team]:
+            row = f"**{names.get(p['player_id'], '?')}** · {p['champion']}"
+            if ranked:
+                d = p.get("elo_delta") or 0
+                row += f" · {'+' if d >= 0 else ''}{round(d, 1)}"
+            st = p.get("stats") or {}
+            if any(st.get(k) is not None for k in STAT_FIELDS):
+                row += "\n`" + " / ".join(_fmt_stat(st.get(k)) for k in ("score", "damage", "protection", "disables")) + "`"
+            out.append(row)
+        return "\n".join(out) or "-"
+
+    num = f"Match #{m['discord_match_id']} — " if m.get("discord_match_id") else ""
+    bits = [f"**Team {won} wins**", f"{m['format']} {'Ranked' if ranked else 'Unranked'}"]
+    if ranked and season.get("name"):
+        bits.append(season["name"])
+    if m.get("map"):
+        bits.append(m["map"])
+    if m.get("balance_mode"):
+        bits.append(BALANCE_MODE_NAMES.get(m["balance_mode"], m["balance_mode"]))
+    embed = {
+        "title": f"{num}Team A {a} – {b} Team B",
+        "description": " · ".join(bits),
+        "color": 0x22C55E,
+        "fields": [
+            {"name": f"Team A{' 🏆' if won == 'A' else ''}", "value": lines("A"), "inline": True},
+            {"name": f"Team B{' 🏆' if won == 'B' else ''}", "value": lines("B"), "inline": True},
+        ],
+        "footer": {"text": "score / damage / protection / disables (round averages)"
+                           + (f" · submitted by {m['reported_by']}" if m.get("reported_by") else "")},
+        "timestamp": m.get("played_at") or _now_iso(),
+    }
+    if PUBLIC_SITE_URL:
+        embed["url"] = f"{PUBLIC_SITE_URL}/matches?match={m['id']}"
+    return {"embeds": [embed], "allowed_mentions": {"parse": []}}
+
+
+async def post_match_log(mid: str):
+    """Post the match to the log channel, or edit its existing post."""
+    m = await db.matches.find_one({"id": mid}, {"_id": 0})
+    if not m or not MATCH_LOG_WEBHOOK:
+        return
+    payload = await match_log_payload(m)
+    loop = asyncio.get_running_loop()
+    log_ref = m.get("discord_log") or {}
+    if log_ref.get("message_id"):
+        if log_ref.get("webhook") != MATCH_LOG_WEBHOOK:
+            return  # posted through an old webhook we can no longer edit
+        status, _ = await loop.run_in_executor(None, _webhook_call, "PATCH",
+                                               f"{MATCH_LOG_WEBHOOK}/messages/{log_ref['message_id']}", payload)
+        if status >= 300:
+            logging.getLogger(__name__).warning("Match log edit returned %s", status)
+        return  # if someone deleted the post in Discord, leave it deleted
+    status, msg = await loop.run_in_executor(None, _webhook_call, "POST", f"{MATCH_LOG_WEBHOOK}?wait=true", payload)
+    if status < 300 and msg:
+        await db.matches.update_one({"id": mid}, {"$set": {
+            "discord_log": {"message_id": msg["id"], "webhook": MATCH_LOG_WEBHOOK},
+        }})
+    else:
+        logging.getLogger(__name__).warning("Match log webhook returned %s", status)
+
+
+async def remove_match_log(m: dict):
+    log_ref = m.get("discord_log") or {}
+    if log_ref.get("message_id") and log_ref.get("webhook"):
+        await asyncio.get_running_loop().run_in_executor(
+            None, _webhook_call, "DELETE", f"{log_ref['webhook']}/messages/{log_ref['message_id']}", None)
 
 
 # --------- Screenshot reading accuracy ---------
