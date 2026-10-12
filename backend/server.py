@@ -1721,6 +1721,13 @@ async def set_player_discord(pid: str, data: DiscordLinkInput, user: dict = Depe
     return await db.players.find_one({"id": pid}, {"_id": 0})
 
 
+@api_router.get("/players/discord-links")
+async def player_discord_links(user: dict = Depends(admin_or_bot)):
+    """Linked players with their Discord ID and the username we have stored (the bot keeps these fresh)."""
+    return await db.players.find({"discord_id": {"$exists": True, "$ne": None}},
+                                 {"_id": 0, "id": 1, "name": 1, "discord_id": 1, "discord_name": 1}).to_list(5000)
+
+
 class PlayerUpdate(BaseModel):
     name: Optional[str] = None
     ign: Optional[str] = None   # "" clears it
