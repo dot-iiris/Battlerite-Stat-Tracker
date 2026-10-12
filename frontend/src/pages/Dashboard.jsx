@@ -93,6 +93,10 @@ export default function Dashboard() {
   const totalRounds = matches.reduce((s, m) => s + m.team_a_rounds + m.team_b_rounds, 0);
   const topPlayer = leaderboard[0];
 
+  const playerNames = Object.fromEntries(players.map((p) => [p.id, p.name]));
+  const teamNames = (m, team) =>
+    m.players.filter((p) => p.team === team).map((p) => playerNames[p.player_id] || "?").join(", ");
+
   return (
     <div className="space-y-8" data-testid="dashboard-page">
       <div>
@@ -127,15 +131,20 @@ export default function Dashboard() {
               {matches.slice(0, 6).map((m) => (
                 <Link key={m.id} to={`/matches?match=${m.id}`} data-testid={`dashboard-recent-${m.id}`}
                   className="flex items-center justify-between p-3 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
-                    <span className="font-mono-hud text-sm">
+                    <span className="font-mono-hud text-sm whitespace-nowrap">
                       <span className={m.winner_team === "A" ? "text-[#00E676]" : "text-slate-400"}>{m.team_a_rounds}</span>
                       <span className="text-slate-600 mx-2">:</span>
                       <span className={m.winner_team === "B" ? "text-[#00E676]" : "text-slate-400"}>{m.team_b_rounds}</span>
                     </span>
+                    <span className="text-xs min-w-0 truncate" data-testid={`dashboard-recent-players-${m.id}`}>
+                      <span className={m.winner_team === "A" ? "text-slate-100" : "text-slate-500"}>{teamNames(m, "A")}</span>
+                      <span className="text-slate-600 mx-1.5">vs</span>
+                      <span className={m.winner_team === "B" ? "text-slate-100" : "text-slate-500"}>{teamNames(m, "B")}</span>
+                    </span>
                   </div>
-                  <span className="text-xs font-mono-hud text-slate-500">{new Date(m.played_at).toLocaleDateString()}</span>
+                  <span className="text-xs font-mono-hud text-slate-500 whitespace-nowrap pl-2">{new Date(m.played_at).toLocaleDateString()}</span>
                 </Link>
               ))}
             </div>

@@ -59,7 +59,6 @@ export default function Login() {
 
         <div className="mb-6">
           <h1 className="font-heading text-3xl font-black uppercase tracking-tight mb-1">Authenticate</h1>
-          <p className="text-slate-400 text-sm">Admin credentials unlock match logging &amp; roster edits.</p>
         </div>
 
         {discordEnabled && (

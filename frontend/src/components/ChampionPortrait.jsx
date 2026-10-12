@@ -123,7 +123,10 @@ export default function ChampionPortrait({ name, role, size = 32, className = ""
         <div className="flex items-center gap-3">
           <PortraitVisual name={name} role={role} size={48} className="" failed={failed} onError={() => setFailed(true)} />
           <div className="min-w-0">
-            <div className="font-heading text-base font-black uppercase tracking-tight truncate">{name}</div>
+            <Link to={`/champions/${encodeURIComponent(name)}`} data-testid={`champion-hover-link-${slugify(name)}`}
+              className="block font-heading text-base font-black uppercase tracking-tight truncate hover:text-cyan-400 transition-colors">
+              {name} <span className="text-cyan-400/70 text-sm">→</span>
+            </Link>
             <div className={`text-[10px] font-mono-hud uppercase tracking-[0.2em] ${roleText}`}>{role}</div>
           </div>
         </div>
