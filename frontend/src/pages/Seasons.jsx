@@ -22,7 +22,7 @@ export default function Seasons() {
 
   const load = async () => {
     const s = await api.get("/seasons");
-    setSeasons(s.data);
+    setSeasons(s.data.filter((x) => x.ranked !== false));   // the permanent Unranked season isn't shown here
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);

@@ -1,4 +1,5 @@
-import { NavLink, useNavigate } from "react-router-dom";
+import { useEffect, useRef } from "react";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/AuthContext";
 import { Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle } from "lucide-react";
 
@@ -22,6 +23,27 @@ export default function Layout({ children }) {
   const nav = useNavigate();
 
   const visibleLinks = links.filter((l) => (!l.adminOnly || isAdmin) && (!l.discordOnly || user?.discord_id));
+  const navRef = useRef(null);
+  const location = useLocation();
+
+  // Mouse wheel scrolls the tab bar sideways when it doesn't all fit
+  useEffect(() => {
+    const el = navRef.current;
+    if (!el) return undefined;
+    const onWheel = (e) => {
+      if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Keep the current page's tab in view
+  useEffect(() => {
+    const active = navRef.current?.querySelector('[aria-current="page"]');
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [location.pathname]);
 
   return (
     <div className="min-h-screen bg-[#06080E] text-slate-100 flex flex-col">
@@ -60,7 +82,7 @@ export default function Layout({ children }) {
           </div>
         </div>
         <nav className="border-t border-[#1B2438]">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex gap-1 overflow-x-auto">
+          <div ref={navRef} className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex gap-1 overflow-x-auto">
             {visibleLinks.map((l) => (
               <NavLink
                 key={l.to}
