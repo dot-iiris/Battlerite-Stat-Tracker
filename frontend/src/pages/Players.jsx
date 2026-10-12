@@ -98,7 +98,7 @@ export default function Players() {
         </div>
       )}
       {editing && (
-        <EditPlayerDialog player={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />
+        <EditPlayerDialog player={editing} players={players} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />
       )}
     </div>
   );

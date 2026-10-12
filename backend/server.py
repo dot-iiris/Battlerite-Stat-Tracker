@@ -723,6 +723,17 @@ async def delete_player(pid: str, user: dict = Depends(admin_required)):
 
 
 # --------- Matches ---------
+def rating_key(mp: dict) -> str:
+    """Which MMR track a match entry belongs to. Normally the player's own id; after a
+    merge, games from the identity whose MMR wasn't kept carry mmr_track and keep
+    their own separate rating history (so nobody else's MMR changes)."""
+    return mp.get("mmr_track") or mp["player_id"]
+
+
+def counts_for_mmr(mp: dict) -> bool:
+    return not mp.get("mmr_track")
+
+
 async def recompute_season_elo(season_id: str):
     """Recompute elo_delta for every match in a season in chronological order."""
     season = await db.seasons.find_one({"id": season_id})
@@ -742,16 +753,17 @@ async def recompute_season_elo(season_id: str):
         team_b = [p for p in m["players"] if p["team"] == "B"]
         if not team_a or not team_b:
             continue
-        ta_mmrs = {p["player_id"]: player_mmr.get(p["player_id"], BASE_MMR) for p in team_a}
-        tb_mmrs = {p["player_id"]: player_mmr.get(p["player_id"], BASE_MMR) for p in team_b}
-        placement_counts = {p["player_id"]: player_match_count.get(p["player_id"], 0)
+        ta_mmrs = {rating_key(p): player_mmr.get(rating_key(p), BASE_MMR) for p in team_a}
+        tb_mmrs = {rating_key(p): player_mmr.get(rating_key(p), BASE_MMR) for p in team_b}
+        placement_counts = {rating_key(p): player_match_count.get(rating_key(p), 0)
                              for p in m["players"]}
         deltas = compute_player_deltas(ta_mmrs, tb_mmrs,
                                        m["team_a_rounds"], m["team_b_rounds"],
                                        placement_counts=placement_counts)
         new_players = []
         for p in m["players"]:
-            info = deltas.get(p["player_id"], {"delta": 0.0, "placement_bonus": False, "carry_bonus": False})
+            key = rating_key(p)
+            info = deltas.get(key, {"delta": 0.0, "placement_bonus": False, "carry_bonus": False})
             d = info["delta"]
             new_players.append({
                 **p,
@@ -759,8 +771,8 @@ async def recompute_season_elo(season_id: str):
                 "placement_bonus": info["placement_bonus"],
                 "carry_bonus": info["carry_bonus"],
             })
-            player_mmr[p["player_id"]] = player_mmr.get(p["player_id"], BASE_MMR) + d
-            player_match_count[p["player_id"]] = player_match_count.get(p["player_id"], 0) + 1
+            player_mmr[key] = player_mmr.get(key, BASE_MMR) + d
+            player_match_count[key] = player_match_count.get(key, 0) + 1
         ta_avg = sum(ta_mmrs.values()) / len(ta_mmrs)
         tb_avg = sum(tb_mmrs.values()) / len(tb_mmrs)
         await db.matches.update_one({"id": m["id"]}, {"$set": {
@@ -778,7 +790,7 @@ async def get_player_mmr(player_id: str, season_id: str) -> float:
     mmr = BASE_MMR
     for m in matches:
         for mp in m["players"]:
-            if mp["player_id"] == player_id:
+            if mp["player_id"] == player_id and counts_for_mmr(mp):
                 mmr += mp.get("elo_delta", 0)
                 break
     return mmr
@@ -832,7 +844,7 @@ async def create_match(data: MatchCreate, user: dict = Depends(admin_required)):
     for pid in team_a_ids + team_b_ids:
         placement_counts[pid] = await db.matches.count_documents({
             "season_id": data.season_id,
-            "players.player_id": pid,
+            "players": {"$elemMatch": {"player_id": pid, "mmr_track": {"$exists": False}}},
         })
     deltas = compute_player_deltas(ta_mmrs, tb_mmrs, data.team_a_rounds, data.team_b_rounds,
                                    placement_counts=placement_counts)
@@ -911,6 +923,7 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
         if len(set(champs)) != len(champs):
             raise HTTPException(400, f"Team {team_label} cannot pick the same champion twice")
 
+    tracks = {p["player_id"]: p.get("mmr_track") for p in existing["players"]}  # keep merge history
     await db.matches.update_one({"id": mid}, {"$set": {
         "season_id": data.season_id,
         "format": data.format,
@@ -921,6 +934,7 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
             "player_id": p.player_id, "champion": p.champion,
             "role": p.role, "team": p.team, "elo_delta": 0,
             "stats": p.stats.model_dump() if p.stats else None,
+            **({"mmr_track": tracks[p.player_id]} if tracks.get(p.player_id) else {}),
         } for p in data.players],
     }})
     # Recompute affected season(s)
@@ -974,8 +988,9 @@ async def leaderboard(season_id: Optional[str] = None, format: Optional[str] = N
             if mp["player_id"] not in stats:
                 continue
             s = stats[mp["player_id"]]
-            s["mmr"] += mp.get("elo_delta", 0)
-            s["peak_mmr"] = max(s["peak_mmr"], s["mmr"])
+            if counts_for_mmr(mp):
+                s["mmr"] += mp.get("elo_delta", 0)
+                s["peak_mmr"] = max(s["peak_mmr"], s["mmr"])
             s["matches"] += 1
             is_a = mp["team"] == "A"
             won = (is_a and m["team_a_rounds"] > m["team_b_rounds"]) or \
@@ -1040,7 +1055,7 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
         local_peak = BASE_MMR
         for sm in s_matches:
             mp = next((p for p in sm["players"] if p["player_id"] == pid), None)
-            if mp:
+            if mp and counts_for_mmr(mp):
                 cur += mp.get("elo_delta", 0)
                 local_peak = max(local_peak, cur)
         if local_peak > peak_all_time:
@@ -1095,7 +1110,8 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
             if won:
                 target[p["player_id"]]["wins"] += 1
 
-        mmr += my.get("elo_delta", 0)
+        if counts_for_mmr(my):
+            mmr += my.get("elo_delta", 0)
         peak = max(peak, mmr)
         mmr_history.append({"match_id": m["id"], "mmr": round(mmr, 2), "played_at": m["played_at"]})
 
@@ -1269,7 +1285,8 @@ async def recap(days: int = 7, season_id: Optional[str] = None):
                     "delta": 0.0, "matches": 0, "wins": 0,
                 }
             c = climbers[p["player_id"]]
-            c["delta"] += p.get("elo_delta", 0)
+            if counts_for_mmr(p):
+                c["delta"] += p.get("elo_delta", 0)
             c["matches"] += 1
             won = (p["team"] == "A" and won_a) or (p["team"] == "B" and not won_a)
             if won:
@@ -1648,6 +1665,92 @@ async def update_player(pid: str, data: PlayerUpdate, user: dict = Depends(admin
     if upd or unset:
         await db.players.update_one({"id": pid}, {k: v for k, v in (("$set", upd), ("$unset", unset)) if v})
     return await db.players.find_one({"id": pid}, {"_id": 0})
+
+
+
+# --------- Merge players ---------
+class MergePlayersInput(BaseModel):
+    source_id: str          # the duplicate - removed after the merge
+    target_id: str          # the player that stays
+    dry_run: bool = False   # preview only
+
+
+@api_router.post("/admin/players/merge")
+async def merge_players(data: MergePlayersInput, user: dict = Depends(admin_required)):
+    """Move every match from source to target. All match/champion stats combine.
+    MMR: in each ranked season, the identity that played most recently keeps its
+    rating; the other identity's games stay in history on a separate rating track."""
+    if data.source_id == data.target_id:
+        raise HTTPException(400, "Pick two different players")
+    src = await db.players.find_one({"id": data.source_id}, {"_id": 0})
+    tgt = await db.players.find_one({"id": data.target_id}, {"_id": 0})
+    if not src or not tgt:
+        raise HTTPException(404, "Player not found")
+    both = await db.matches.count_documents({"$and": [{"players.player_id": src["id"]},
+                                                      {"players.player_id": tgt["id"]}]})
+    if both:
+        raise HTTPException(409, f"{src['name']} and {tgt['name']} played in the same match {both} time(s), "
+                                 f"so they can't be the same person. Fix those matches first.")
+    seasons = {s["id"]: s for s in await db.seasons.find({}, {"_id": 0}).to_list(1000)}
+    src_matches = await db.matches.find({"players.player_id": src["id"]}, {"_id": 0}).to_list(100000)
+    tgt_matches = await db.matches.find({"players.player_id": tgt["id"]}, {"_id": 0}).to_list(100000)
+
+    def last_main(matches, pid):
+        out = {}
+        for m in matches:
+            mp = next(p for p in m["players"] if p["player_id"] == pid)
+            if counts_for_mmr(mp) and m["played_at"] > out.get(m["season_id"], ""):
+                out[m["season_id"]] = m["played_at"]
+        return out
+
+    src_last, tgt_last = last_main(src_matches, src["id"]), last_main(tgt_matches, tgt["id"])
+    plan = []        # per ranked season: whose MMR is kept
+    retire_src, retire_tgt = set(), set()
+    for sid in sorted(set(src_last) | set(tgt_last)):
+        season = seasons.get(sid)
+        if not is_ranked_season(season):
+            continue
+        keep = "source" if src_last.get(sid, "") > tgt_last.get(sid, "") else "target"
+        if src_last.get(sid) and tgt_last.get(sid):
+            (retire_tgt if keep == "source" else retire_src).add(sid)
+        plan.append({"season_id": sid, "season": (season or {}).get("name", "?"),
+                     "mmr_kept_from": src["name"] if keep == "source" else tgt["name"],
+                     "source_last_played": src_last.get(sid), "target_last_played": tgt_last.get(sid)})
+    summary = {"source": src["name"], "target": tgt["name"], "source_matches": len(src_matches),
+               "target_matches": len(tgt_matches), "seasons": plan,
+               "discord": ("kept " + tgt["name"] + "'s link" if tgt.get("discord_id")
+                           else (f"moves {src['name']}'s link" if src.get("discord_id") else "none"))}
+    if data.dry_run:
+        return {"dry_run": True, **summary}
+
+    for m in src_matches + tgt_matches:
+        new_players = []
+        for p in m["players"]:
+            if p["player_id"] == src["id"]:
+                p = {**p, "player_id": tgt["id"]}
+                if m["season_id"] in retire_src and counts_for_mmr(p):
+                    p["mmr_track"] = f"merged:{src['id']}"
+            elif p["player_id"] == tgt["id"] and m["season_id"] in retire_tgt and counts_for_mmr(p):
+                p = {**p, "mmr_track": f"merged:{tgt['id']}"}
+            new_players.append(p)
+        await db.matches.update_one({"id": m["id"]}, {"$set": {"players": new_players}})
+
+    for coll, field in (("pending_matches", "team_a"), ("pending_matches", "team_b")):
+        await db[coll].update_many({field: src["id"]}, {"$set": {f"{field}.$": tgt["id"]}})
+    await db.link_requests.update_many({"player_id": src["id"]}, {"$set": {"player_id": tgt["id"], "player_name": tgt["name"]}})
+    upd = {}
+    if not tgt.get("discord_id") and src.get("discord_id"):
+        upd.update({"discord_id": src["discord_id"], "discord_name": src.get("discord_name", "")})
+    if not tgt.get("ign") and src.get("ign"):
+        upd["ign"] = src["ign"]
+    await db.players.delete_one({"id": src["id"]})   # before moving the link (unique index)
+    if upd:
+        await db.players.update_one({"id": tgt["id"]}, {"$set": upd})
+    await db.player_merges.insert_one({"id": str(uuid.uuid4()), "source": src, "target_id": tgt["id"],
+                                       "plan": plan, "by": user.get("name"), "at": _now_iso()})
+    for sid in {m["season_id"] for m in src_matches + tgt_matches}:
+        await recompute_season_elo(sid)
+    return {"dry_run": False, **summary}
 
 
 @api_router.get("/admin/players")
