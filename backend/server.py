@@ -1625,8 +1625,8 @@ def normalize_match_stats(match: dict) -> dict:
     rewritten (bump STATS_MODEL_VERSION) and every match re-derived at any time.
     Raw stats are per-round averages (STATS_RAW_BASIS). The whole match is
     passed in, so formulas can use teammates' and opponents' numbers.
-    v2: share of own team's total, and damage relative to the enemy team's
-    protection.
+    v2: share of own team's total, and normalised damage
+    (damage - enemy team protection x player's damage share).
     """
     rounds = (match.get("team_a_rounds") or 0) + (match.get("team_b_rounds") or 0)
     teams = {"A": [], "B": []}
@@ -1648,10 +1648,15 @@ def normalize_match_stats(match: dict) -> dict:
                     continue
                 tot = team_total(p["team"], f)
                 derived[f"{f}_team_share"] = round(v / tot, 4) if tot else None
+            # Normalised damage: the enemy team's protection is split across this
+            # team in proportion to each player's share of the team's damage, then
+            # subtracted (never below 0).
             dmg = raw.get("damage")
-            enemy_prot = team_total(enemy, "protection")
             if dmg is not None:
-                derived["damage_vs_enemy_protection"] = round(dmg / (dmg + enemy_prot), 4) if (dmg + enemy_prot) else None
+                team_dmg = team_total(p["team"], "damage")
+                share = dmg / team_dmg if team_dmg else 0
+                enemy_prot = team_total(enemy, "protection")
+                derived["damage_normalised"] = round(max(0.0, dmg - enemy_prot * share), 2)
         out.append({"player_id": p["player_id"], "team": p["team"], "champion": p["champion"],
                     "raw": raw or None, "derived": derived})
     return {"match_id": match.get("id"), "rounds": rounds, "model_version": STATS_MODEL_VERSION,
