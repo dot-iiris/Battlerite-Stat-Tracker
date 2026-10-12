@@ -850,6 +850,13 @@ async def _team_mmr(player_ids: List[str], season_id: str) -> float:
 
 @api_router.post("/matches")
 async def create_match(data: MatchCreate, user: dict = Depends(admin_required)):
+    """Log Match tab: save the match and post it to the Discord match log."""
+    doc = await _insert_match(data)
+    schedule_match_log(doc["id"])
+    return doc
+
+
+async def _insert_match(data: MatchCreate) -> dict:
     await check_and_close_expired_seasons()
     # Validate
     team_a = [p for p in data.players if p.team == "A"]
@@ -2150,7 +2157,7 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
         notes=pm.get("notes", "") if data.notes is None else data.notes,
         played_at=pm["played_at"],
     )
-    match = await create_match(match_in, user)
+    match = await _insert_match(match_in)   # posted to the match log below, once MMR is final
     await db.matches.update_one({"id": match["id"]}, {"$set": {
         "source": pm.get("source"), "source_ref": pm.get("source_ref"), "map": pm.get("map"),
         "balance_mode": pm.get("balance_mode"), "reported_by": pm.get("reported_by"),
@@ -2445,7 +2452,7 @@ async def push_leaderboard_now(user: dict = Depends(admin_required)):
 
 
 # --------- Discord match log ---------
-# Set DISCORD_MATCH_LOG_WEBHOOK_URL and every match an admin logs from the Pending
+# Set DISCORD_MATCH_LOG_WEBHOOK_URL and every match an admin logs (Log Match tab, or the Pending
 # page (i.e. confirmed /submit results) is posted to that channel. Editing the match
 # on the website edits the post; deleting the match deletes it.
 MATCH_LOG_WEBHOOK = os.environ.get("DISCORD_MATCH_LOG_WEBHOOK_URL", "").strip()
