@@ -1,4 +1,4 @@
-import { NavLink, useNavigate } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import { prefetchPage } from "@/api";
 import { useAuth } from "@/AuthContext";
 import { Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle } from "lucide-react";
@@ -15,7 +15,6 @@ const links = [
   { to: "/matchmaking", label: "Matchmaking", icon: Sliders, testid: "nav-matchmaking" },
   { to: "/recap", label: "Recap", icon: FileBarChart2, testid: "nav-recap" },
   { to: "/seasons", label: "Seasons", icon: Calendar, testid: "nav-seasons" },
-  { to: "/me", label: "My Profile", icon: UserCircle, testid: "nav-me", discordOnly: true },
 ];
 
 export default function Layout({ children }) {
@@ -60,8 +59,16 @@ export default function Layout({ children }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {!isGuest && user?.email && (
-              <span className="hidden md:inline font-mono-hud text-xs text-slate-400" data-testid="nav-user-email">{user.discord_id ? user.name : user.email}</span>
+            {!isGuest && user?.discord_id ? (
+              // My profile: goes straight to your player page (or to linking, if not linked yet)
+              <Link to="/me" title="My profile" data-testid="nav-me"
+                onMouseEnter={() => prefetchPage("/me")} onFocus={() => prefetchPage("/me")}
+                className="flex items-center gap-1.5 px-2 py-1 rounded font-mono-hud text-xs text-slate-300 hover:text-cyan-400 border border-transparent hover:border-[#1B2438] transition-colors">
+                <UserCircle className="w-4 h-4" />
+                <span className="hidden sm:inline max-w-[10rem] truncate">{user.name}</span>
+              </Link>
+            ) : !isGuest && user?.email && (
+              <span className="hidden md:inline font-mono-hud text-xs text-slate-400" data-testid="nav-user-email">{user.email}</span>
             )}
             {user?.role && (
               <span

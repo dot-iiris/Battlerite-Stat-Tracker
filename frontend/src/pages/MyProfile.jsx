@@ -1,22 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import api from "@/api";
 import { toast } from "sonner";
 import { Clock, Link2, UserCircle } from "lucide-react";
-import StreakBadge from "@/components/StreakBadge";
 
 function avatarUrl(user) {
   if (!user?.discord_id || !user?.discord_avatar) return null;
   return `https://cdn.discordapp.com/avatars/${user.discord_id}/${user.discord_avatar}.png?size=128`;
-}
-
-function Stat({ label, value }) {
-  return (
-    <div className="bg-[#121828]/60 border border-[#1B2438] rounded p-3">
-      <div className="text-[10px] font-mono-hud uppercase tracking-[0.2em] text-slate-500">{label}</div>
-      <div className="font-mono-hud text-2xl font-black text-slate-100 mt-1">{value}</div>
-    </div>
-  );
 }
 
 export default function MyProfile() {
@@ -48,7 +38,9 @@ export default function MyProfile() {
   };
 
   if (!data) return <div className="text-slate-400 font-mono-hud">Loading…</div>;
-  const { user, player, link_request: req, stats } = data;
+  const { user, player, link_request: req } = data;
+  // linked: your profile is your player page
+  if (player) return <Navigate to={`/players/${player.id}`} replace />;
   const avatar = avatarUrl(user);
 
   return (
@@ -67,31 +59,6 @@ export default function MyProfile() {
       {!user.discord_id ? (
         <div className="hud-card p-5 text-sm text-slate-400">
           You're signed in with an admin account. Log in with Discord to get a player profile.
-        </div>
-      ) : player ? (
-        <div className="hud-card p-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-sm text-slate-400">
-              Linked to <span className="text-cyan-400 font-semibold">{player.name}</span>
-              {player.ign && <> · in-game name <span className="text-slate-200">{player.ign}</span></>}
-            </div>
-            <Link to={`/players/${player.id}`} className="text-xs font-mono-hud uppercase text-cyan-400 hover:text-cyan-300">Full stats →</Link>
-          </div>
-          {stats && stats.matches ? (
-            <>
-              <div className="flex items-center gap-2 text-xs font-mono-hud uppercase tracking-wider text-slate-500">
-                {stats.season} <StreakBadge streak={stats.streak} />
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <Stat label="Rank" value={`#${stats.rank}`} />
-                <Stat label="MMR" value={Math.round(stats.mmr)} />
-                <Stat label="Record" value={`${stats.wins}-${stats.losses}`} />
-                <Stat label="Winrate" value={`${stats.winrate}%`} />
-              </div>
-            </>
-          ) : (
-            <div className="text-sm text-slate-500">No ranked matches this season yet. Jump in with <span className="font-mono-hud text-slate-300">/join</span> in Discord.</div>
-          )}
         </div>
       ) : req ? (
         <div className="hud-card p-5 flex items-start gap-3">

@@ -534,20 +534,12 @@ async def _discord_user_required(request: Request) -> dict:
 
 @api_router.get("/me")
 async def my_profile(user: dict = Depends(get_current_user)):
-    out = {"user": user, "player": None, "link_request": None, "stats": None}
+    out = {"user": user, "player": None, "link_request": None}
     if not user.get("discord_id"):
         return out
     player = await db.players.find_one({"discord_id": user["discord_id"]}, {"_id": 0})
-    out["player"] = player
-    if player:
-        season = await get_active_ranked_season()
-        if season:
-            played = [r for r in await leaderboard(season_id=season["id"]) if r["matches"]]
-            row = next((r for r in played if r["player_id"] == player["id"]), None)
-            out["stats"] = {"season": season["name"], **(row or {})}
-            if row:
-                out["stats"]["rank"] = played.index(row) + 1  # same numbering as the bot
-    else:
+    out["player"] = player   # the site sends linked players straight to their player page
+    if not player:
         out["link_request"] = await db.link_requests.find_one(
             {"discord_id": user["discord_id"], "status": "pending"}, {"_id": 0})
     return out
