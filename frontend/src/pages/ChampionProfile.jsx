@@ -173,18 +173,33 @@ export default function ChampionProfile() {
           <div className="space-y-2">
             {stats.recent_matches.map((m) => {
               const won_a = m.team_a_rounds > m.team_b_rounds;
+              const icons = (team) => (
+                <span className={`flex items-center gap-1 ${(team === "A") === won_a ? "" : "opacity-50"}`}>
+                  {m.players.filter((p) => p.team === team).map((p) => (
+                    <span key={p.player_id} className={p.champion === stats.champion ? "rounded ring-2 ring-[#FFB800]" : ""}>
+                      <ChampionPortrait name={p.champion} role={p.role} size={26} linkToProfile={false} />
+                    </span>
+                  ))}
+                </span>
+              );
               return (
-                <div key={m.id} className="flex items-center justify-between p-3 bg-[#121828]/60 border border-[#1B2438] rounded">
-                  <div className="flex items-center gap-3">
+                <Link key={m.id} to={`/matches?match=${m.id}`} data-testid={`champion-recent-${m.id}`}
+                  className="flex items-center justify-between gap-3 p-3 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
+                  <div className="flex items-center gap-3 flex-wrap min-w-0">
                     <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
-                    <span className="font-mono-hud text-sm">
+                    <span className="font-mono-hud text-sm whitespace-nowrap">
                       <span className={won_a ? "text-[#00E676]" : "text-slate-400"}>{m.team_a_rounds}</span>
                       <span className="text-slate-600 mx-2">:</span>
                       <span className={!won_a ? "text-[#00E676]" : "text-slate-400"}>{m.team_b_rounds}</span>
                     </span>
+                    <span className="flex items-center gap-2">
+                      {icons("A")}
+                      <span className="text-xs text-slate-600">vs</span>
+                      {icons("B")}
+                    </span>
                   </div>
-                  <span className="text-xs font-mono-hud text-slate-500">{new Date(m.played_at).toLocaleDateString()}</span>
-                </div>
+                  <span className="text-xs font-mono-hud text-slate-500 whitespace-nowrap">{new Date(m.played_at).toLocaleDateString()}</span>
+                </Link>
               );
             })}
           </div>
