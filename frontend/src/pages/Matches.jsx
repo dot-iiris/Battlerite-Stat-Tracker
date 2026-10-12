@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import api from "@/api";
 import { toast } from "sonner";
-import { Trash2, Filter, Pencil, Search, Download } from "lucide-react";
+import { Trash2, Filter, Pencil, Search, Download, ChevronDown } from "lucide-react";
 import { useAuth } from "@/AuthContext";
 import EditMatchDialog from "@/components/EditMatchDialog";
 import ChampionPortrait from "@/components/ChampionPortrait";
+import MatchDetails from "@/components/MatchDetails";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -18,6 +19,24 @@ export default function Matches() {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
   const { user, isAdmin } = useAuth();
+  const [params, setParams] = useSearchParams();
+  const openId = params.get("match");
+  const scrolledTo = useRef(null);
+
+  const toggleOpen = (id) => {
+    const next = new URLSearchParams(params);
+    if (openId === id) next.delete("match"); else next.set("match", id);
+    setParams(next, { replace: true });
+  };
+
+  // Arriving from a link like /matches?match=<id>: scroll to that match once it has loaded
+  useEffect(() => {
+    if (!openId || scrolledTo.current === openId || !matches.some((m) => m.id === openId)) return;
+    scrolledTo.current = openId;
+    requestAnimationFrame(() => {
+      document.getElementById(`match-${openId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [openId, matches]);
 
   const load = async () => {
     const params = {};
@@ -86,6 +105,7 @@ export default function Matches() {
       ) : (
         <div className="space-y-3">
           {matches.filter((m) => {
+            if (m.id === openId) return true;  // keep the linked match visible
             if (!search.trim()) return true;
             const q = search.trim().toLowerCase();
             if ((m.notes || "").toLowerCase().includes(q)) return true;
@@ -96,20 +116,29 @@ export default function Matches() {
             const teamA = m.players.filter((p) => p.team === "A");
             const teamB = m.players.filter((p) => p.team === "B");
             const aWon = m.winner_team === "A";
+            const open = m.id === openId;
             return (
-              <div key={m.id} className="hud-card p-5" data-testid={`match-row-${m.id}`}>
+              <div key={m.id} id={`match-${m.id}`}
+                className={`hud-card p-5 cursor-pointer transition-colors ${open ? "border-cyan-400/60 ring-1 ring-cyan-400/40" : "hover:border-cyan-400/30"}`}
+                onClick={(e) => { if (!e.target.closest("a,button,input,select")) toggleOpen(m.id); }}
+                data-testid={`match-row-${m.id}`}>
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
                     <span className="text-[10px] font-mono-hud uppercase text-slate-500">{new Date(m.played_at).toLocaleString()}</span>
                     {m.notes && <span className="text-xs text-slate-400 italic">"{m.notes}"</span>}
                   </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => toggleOpen(m.id)} className="text-slate-400 hover:text-cyan-400 text-[10px] font-mono-hud uppercase tracking-wider flex items-center gap-1 p-1" data-testid={`match-open-${m.id}`}>
+                      {open ? "Hide stats" : "Stats"} <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+                    </button>
                   {isAdmin && (
-                    <div className="flex items-center gap-1">
+                    <>
                       <button onClick={() => setEditing(m)} className="text-slate-500 hover:text-cyan-400 text-xs flex items-center gap-1 p-1" data-testid={`match-edit-${m.id}`}><Pencil className="w-3.5 h-3.5" /></button>
                       <button onClick={() => del(m.id)} className="text-slate-500 hover:text-[#FF2E55] text-xs flex items-center gap-1 p-1" data-testid={`match-delete-${m.id}`}><Trash2 className="w-3.5 h-3.5" /></button>
-                    </div>
+                    </>
                   )}
+                  </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-4 items-center">
                   <div className={`p-3 rounded border ${aWon ? "border-[#00E676]/40 bg-[#00E676]/5" : "border-[#1B2438] bg-[#121828]/40"}`}>
@@ -148,6 +177,10 @@ export default function Matches() {
                     ))}
                   </div>
                 </div>
+                {open && (
+                  <MatchDetails match={m} playerName={playerName}
+                    seasonName={seasons.find((s) => s.id === m.season_id)?.name} />
+                )}
               </div>
             );
           })}

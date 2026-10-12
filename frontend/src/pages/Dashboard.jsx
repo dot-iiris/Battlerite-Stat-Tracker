@@ -125,7 +125,8 @@ export default function Dashboard() {
           ) : (
             <div className="space-y-2">
               {matches.slice(0, 6).map((m) => (
-                <div key={m.id} className="flex items-center justify-between p-3 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
+                <Link key={m.id} to={`/matches?match=${m.id}`} data-testid={`dashboard-recent-${m.id}`}
+                  className="flex items-center justify-between p-3 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
                   <div className="flex items-center gap-3">
                     <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
                     <span className="font-mono-hud text-sm">
@@ -135,7 +136,7 @@ export default function Dashboard() {
                     </span>
                   </div>
                   <span className="text-xs font-mono-hud text-slate-500">{new Date(m.played_at).toLocaleDateString()}</span>
-                </div>
+                </Link>
               ))}
             </div>
           )}
