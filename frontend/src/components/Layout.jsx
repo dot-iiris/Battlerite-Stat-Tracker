@@ -1,11 +1,12 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/AuthContext";
-import { Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye } from "lucide-react";
+import { Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox } from "lucide-react";
 
 const links = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
   { to: "/matches", label: "Matches", icon: Swords, testid: "nav-matches" },
   { to: "/log", label: "Log Match", icon: PlusCircle, testid: "nav-log", adminOnly: true },
+  { to: "/pending", label: "Pending", icon: Inbox, testid: "nav-pending", adminOnly: true },
   { to: "/leaderboard", label: "Leaderboard", icon: Trophy, testid: "nav-leaderboard" },
   { to: "/players", label: "Players", icon: Users, testid: "nav-players" },
   { to: "/matrix", label: "PvP Matrix", icon: Grid3x3, testid: "nav-matrix" },

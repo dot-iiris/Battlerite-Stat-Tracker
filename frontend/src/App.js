@@ -15,6 +15,7 @@ import ChampionProfile from "@/pages/ChampionProfile";
 import Matchmaking from "@/pages/Matchmaking";
 import Recap from "@/pages/Recap";
 import Seasons from "@/pages/Seasons";
+import Pending from "@/pages/Pending";
 
 function Protected({ children, adminOnly }) {
   const { user, loading, isAdmin } = useAuth();
@@ -40,6 +41,7 @@ function App() {
           <Route path="/" element={<Protected><Dashboard /></Protected>} />
           <Route path="/matches" element={<Protected><Matches /></Protected>} />
           <Route path="/log" element={<Protected adminOnly><LogMatch /></Protected>} />
+          <Route path="/pending" element={<Protected adminOnly><Pending /></Protected>} />
           <Route path="/leaderboard" element={<Protected><Leaderboard /></Protected>} />
           <Route path="/players" element={<Protected><Players /></Protected>} />
           <Route path="/players/:id" element={<Protected><PlayerProfile /></Protected>} />
