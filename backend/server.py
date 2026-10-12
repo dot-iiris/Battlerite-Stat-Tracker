@@ -1575,6 +1575,7 @@ class LinkDecision(BaseModel):
 class DiscordLinkInput(BaseModel):
     discord_id: Optional[str] = None   # None / "" = unlink
     discord_name: Optional[str] = None
+    move: bool = False                 # admin: take the link from whichever player has it now
 
 
 async def _check_link_conflicts(discord_id: str, player: dict):
@@ -1601,13 +1602,76 @@ async def set_player_discord(pid: str, data: DiscordLinkInput, user: dict = Depe
     if not data.discord_id:
         await db.players.update_one({"id": pid}, {"$unset": {"discord_id": "", "discord_name": ""}})
     else:
-        other = await db.players.find_one({"discord_id": data.discord_id, "id": {"$ne": pid}}, {"_id": 0})
+        did = data.discord_id.strip()
+        if not did.isdigit():
+            raise HTTPException(400, "A Discord user ID is a long number (right-click the user > Copy User ID)")
+        other = await db.players.find_one({"discord_id": did, "id": {"$ne": pid}}, {"_id": 0})
         if other:
-            raise HTTPException(409, f"This Discord account is already linked to {other['name']}")
-        await db.players.update_one({"id": pid}, {"$set": {
-            "discord_id": data.discord_id, "discord_name": data.discord_name or "",
-        }})
+            if not (data.move and user.get("role") == "admin"):
+                raise HTTPException(409, f"This Discord account is already linked to {other['name']}")
+            await db.players.update_one({"id": other["id"]}, {"$unset": {"discord_id": "", "discord_name": ""}})
+        name = data.discord_name
+        if not name:  # fill in a name we already know for this account
+            known = await db.users.find_one({"discord_id": did}) or await db.link_requests.find_one({"discord_id": did}) or {}
+            name = known.get("discord_name") or ""
+        await db.players.update_one({"id": pid}, {"$set": {"discord_id": did, "discord_name": name}})
+        # any open request from this account is settled by the direct link
+        await db.link_requests.update_many({"discord_id": did, "status": "pending"}, {"$set": {
+            "status": "superseded", "decided_by": user.get("name") or "admin", "decided_at": _now_iso()}})
     return await db.players.find_one({"id": pid}, {"_id": 0})
+
+
+class PlayerUpdate(BaseModel):
+    name: Optional[str] = None
+    ign: Optional[str] = None   # "" clears it
+
+
+@api_router.patch("/players/{pid}")
+async def update_player(pid: str, data: PlayerUpdate, user: dict = Depends(admin_required)):
+    player = await db.players.find_one({"id": pid}, {"_id": 0})
+    if not player:
+        raise HTTPException(404, "Player not found")
+    upd, unset = {}, {}
+    if data.name is not None:
+        name = " ".join(data.name.split())
+        if not 1 <= len(name) <= 30:
+            raise HTTPException(400, "Player names must be 1-30 characters")
+        clash = await _find_player_by_name(name)
+        if clash and clash["id"] != pid:
+            raise HTTPException(409, f"There's already a player called {clash['name']}")
+        upd["name"] = name
+    if data.ign is not None:
+        if data.ign.strip():
+            upd["ign"] = data.ign.strip()
+        else:
+            unset["ign"] = ""
+    if upd or unset:
+        await db.players.update_one({"id": pid}, {k: v for k, v in (("$set", upd), ("$unset", unset)) if v})
+    return await db.players.find_one({"id": pid}, {"_id": 0})
+
+
+@api_router.get("/admin/players")
+async def admin_players(user: dict = Depends(admin_required)):
+    """Players with their Discord link and in-game name (hidden from the public list)."""
+    docs = await db.players.find({}, {"_id": 0}).to_list(5000)
+    return sorted(docs, key=lambda x: x["name"].lower())
+
+
+@api_router.get("/admin/discord-accounts")
+async def admin_discord_accounts(user: dict = Depends(admin_required)):
+    """Discord accounts the site has seen (Discord logins, link requests, existing links)."""
+    seen: dict = {}
+    async for u in db.users.find({"discord_id": {"$exists": True}}, {"_id": 0}):
+        seen[u["discord_id"]] = {"discord_id": u["discord_id"], "discord_name": u.get("discord_name") or u.get("name"),
+                                 "display_name": u.get("name"), "source": "website login"}
+    async for r in db.link_requests.find({}, {"_id": 0}).sort("created_at", -1):
+        seen.setdefault(r["discord_id"], {"discord_id": r["discord_id"], "discord_name": r.get("discord_name"),
+                                          "display_name": None, "source": "link request"})
+    async for p in db.players.find({"discord_id": {"$exists": True}}, {"_id": 0}):
+        acc = seen.setdefault(p["discord_id"], {"discord_id": p["discord_id"], "discord_name": p.get("discord_name"),
+                                                "display_name": None, "source": "linked"})
+        acc["linked_player_id"], acc["linked_player"] = p["id"], p["name"]
+    return sorted(seen.values(), key=lambda a: (a.get("discord_name") or "").lower())
 
 
 @api_router.post("/link-requests")

@@ -1,20 +1,23 @@
 import { useEffect, useState } from "react";
 import api from "@/api";
 import { toast } from "sonner";
-import { UserPlus, Trash2, Users } from "lucide-react";
+import { UserPlus, Trash2, Users, Pencil } from "lucide-react";
 import { useAuth } from "@/AuthContext";
+import EditPlayerDialog from "@/components/EditPlayerDialog";
 
 export default function Players() {
   const [players, setPlayers] = useState([]);
   const [name, setName] = useState("");
+  const [editing, setEditing] = useState(null);
   const { isAdmin } = useAuth();
 
   const load = async () => {
-    const p = await api.get("/players");
+    // admins also see Discord links and in-game names
+    const p = await api.get(isAdmin ? "/admin/players" : "/players");
     setPlayers(p.data);
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [isAdmin]);
 
   const add = async (e) => {
     e.preventDefault();
@@ -68,14 +71,34 @@ export default function Players() {
                 <div className="w-10 h-10 bg-[#121828] border border-[#1B2438] rounded flex items-center justify-center font-mono-hud font-black text-cyan-400">
                   {p.name[0]?.toUpperCase()}
                 </div>
-                <a href={`/players/${p.id}`} className="font-medium hover:text-cyan-400">{p.name}</a>
+                <div className="min-w-0">
+                  <a href={`/players/${p.id}`} className="font-medium hover:text-cyan-400 block truncate">{p.name}</a>
+                  {isAdmin && (
+                    <div className="text-[10px] font-mono-hud truncate" data-testid={`player-discord-${p.id}`}>
+                      {p.discord_id
+                        ? <span className="text-[#8B95F5]">@{p.discord_name || p.discord_id}</span>
+                        : <span className="text-slate-600">no Discord</span>}
+                      {p.ign && <span className="text-slate-500"> · IGN {p.ign}</span>}
+                    </div>
+                  )}
+                </div>
               </div>
-              <button onClick={() => del(p.id)} className={`text-slate-500 hover:text-[#FF2E55] ${!isAdmin ? "hidden" : ""}`} data-testid={`player-delete-${p.id}`}>
-                <Trash2 className="w-4 h-4" />
-              </button>
+              {isAdmin && (
+                <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => setEditing(p)} className="text-slate-500 hover:text-cyan-400 p-1" title="Edit player" data-testid={`player-edit-${p.id}`}>
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => del(p.id)} className="text-slate-500 hover:text-[#FF2E55] p-1" data-testid={`player-delete-${p.id}`}>
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>
+      )}
+      {editing && (
+        <EditPlayerDialog player={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />
       )}
     </div>
   );
