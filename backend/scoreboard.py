@@ -1,7 +1,7 @@
 """Read a Battlerite end-of-match scoreboard screenshot.
 
-- Text (names, stats, champion labels) is read with local OCR (RapidOCR - no
-  account or API key). Positions come from the on-screen headings ("Your Team",
+- Text (names, stats, champion labels) is read with local OCR (RapidOCR 3 +
+  onnxruntime, headless OpenCV - no account, API key or system libraries). Positions come from the on-screen headings ("Your Team",
   "Damage", ...) so any resolution works.
 - Champions are also recognised from their portrait icons, using reference
   icons saved every time an admin confirms a match (it gets better over time).
@@ -28,9 +28,27 @@ _ocr = None
 def _get_ocr():
     global _ocr
     if _ocr is None:
-        from rapidocr_onnxruntime import RapidOCR  # optional dependency, loaded on first use
-        _ocr = RapidOCR()
+        from rapidocr import RapidOCR  # optional dependency, loaded on first use
+        _ocr = RapidOCR(params={"Global.log_level": "error"})
     return _ocr
+
+
+def _ocr_run(img_rgb):
+    """[(box, text)] for every piece of text RapidOCR finds."""
+    r = _get_ocr()(img_rgb)
+    if r is None or r.boxes is None or r.txts is None:
+        return []
+    return list(zip(r.boxes.tolist(), r.txts))
+
+
+def _load_image(image):
+    """Accepts raw bytes (from the database) or a file path."""
+    import cv2
+    import numpy as np
+
+    if isinstance(image, (bytes, bytearray, memoryview)):
+        return cv2.imdecode(np.frombuffer(bytes(image), np.uint8), cv2.IMREAD_COLOR)
+    return cv2.imread(str(image))
 
 
 def _norm(s: str) -> str:
@@ -60,13 +78,31 @@ def _tokens(img, f: float) -> List[dict]:
     crop = img[y0:int(h * 0.88), x0:int(w * 0.82)]
     if f != 1.0:
         crop = cv2.resize(crop, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
-    result, _ = _get_ocr()(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
     out = []
-    for box, text, _conf in result or []:
+    for box, text in _ocr_run(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)):
         xs = [p[0] / f + x0 for p in box]
         ys = [p[1] / f + y0 for p in box]
         out.append({"text": text.strip(), "x": sum(xs) / 4, "y": sum(ys) / 4,
                     "x0": min(xs), "x1": max(xs), "h": max(ys) - min(ys)})
+    return _join_labels(out)
+
+
+_LABELS = ("yourteam", "enemyteam", "averagetotal", "leavematch")
+
+
+def _join_labels(toks: List[dict]) -> List[dict]:
+    """OCR sometimes splits a heading into words ("Enemy" + "Team"); glue those back together."""
+    out = list(toks)
+    for a in toks:
+        for b in toks:
+            if a is b or b["x"] <= a["x"] or b["x0"] - a["x1"] > 2 * max(a["h"], b["h"]):
+                continue
+            if abs(a["y"] - b["y"]) > max(a["h"], b["h"]) * 0.6:
+                continue
+            if _norm(a["text"] + b["text"]) in _LABELS:
+                out.append({"text": f"{a['text']} {b['text']}", "x": (a["x0"] + b["x1"]) / 2,
+                            "y": (a["y"] + b["y"]) / 2, "x0": a["x0"], "x1": b["x1"],
+                            "h": max(a["h"], b["h"])})
     return out
 
 
@@ -80,8 +116,7 @@ def _timer_x(img) -> Optional[float]:
     f = max(1.0, 2400.0 / h)
     if f > 1.0:
         band = cv2.resize(band, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
-    result, _ = _get_ocr()(cv2.cvtColor(band, cv2.COLOR_BGR2RGB))
-    for box, text, _conf in result or []:
+    for box, text in _ocr_run(cv2.cvtColor(band, cv2.COLOR_BGR2RGB)):
         if re.fullmatch(r"\d{1,2}:\d{2}", text.strip()):
             return sum(p[0] for p in box) / 4 / f + x0
     return None
@@ -136,11 +171,27 @@ def crop_icon(img, box: List[int]):
     return cv2.resize(c, (ICON_SIZE, ICON_SIZE), interpolation=cv2.INTER_AREA)
 
 
-def load_icon_refs(*dirs: str) -> Dict[str, list]:
-    """{champion: [icon arrays]} from folders laid out as <dir>/<Champion>/*.png."""
+def encode_icon(img, box: List[int]) -> Optional[bytes]:
+    """PNG bytes of a portrait crop, for saving as a reference icon."""
+    import cv2
+
+    icon = crop_icon(img, box)
+    if icon is None:
+        return None
+    ok, buf = cv2.imencode(".png", icon)
+    return buf.tobytes() if ok else None
+
+
+def load_icon_refs(*dirs: str, stored: Optional[List[tuple]] = None) -> Dict[str, list]:
+    """{champion: [icon arrays]} from folders laid out as <dir>/<Champion>/*.png
+    plus stored = [(champion, png bytes)] (icons learned and kept in the database)."""
     import cv2
 
     refs: Dict[str, list] = {}
+    for champ, png in stored or []:
+        im = _load_image(png)
+        if im is not None:
+            refs.setdefault(champ, []).append(cv2.resize(im, (ICON_SIZE, ICON_SIZE)).astype("float32"))
     for d in dirs:
         if not d or not os.path.isdir(d):
             continue
@@ -155,17 +206,26 @@ def load_icon_refs(*dirs: str) -> Dict[str, list]:
     return refs
 
 
-def match_icon(icon, refs: Dict[str, list]):
+def match_icon(img, box: List[int], refs: Dict[str, list]):
+    """Best matching champion for the portrait at box. Tries small shifts so a
+    slightly-off box (different resolution / OCR positions) still matches."""
     import numpy as np
 
-    if icon is None or not refs:
+    if not refs:
         return None, None
-    q = icon.astype("float32")
+    x0, y0, x1, y1 = box
+    step = max(1, int((x1 - x0) * 0.12))
     best, best_d = None, 1.0
-    for champ, arrs in refs.items():
-        d = min(float(np.mean(np.abs(q - a))) / 255.0 for a in arrs)
-        if d < best_d:
-            best, best_d = champ, d
+    for dx in (-step, 0, step):
+        for dy in (-step, 0, step):
+            icon = crop_icon(img, [x0 + dx, y0 + dy, x1 + dx, y1 + dy])
+            if icon is None:
+                continue
+            q = icon.astype("float32")
+            for champ, arrs in refs.items():
+                d = min(float(np.mean(np.abs(q - a))) / 255.0 for a in arrs)
+                if d < best_d:
+                    best, best_d = champ, d
     return (best, round(best_d, 3)) if best_d <= ICON_MATCH_MAX else (None, round(best_d, 3))
 
 
@@ -249,12 +309,11 @@ def _filled(p: dict) -> int:
     return sum(v is not None for v in p["stats"].values()) + bool(p.get("name")) + bool(p.get("champion"))
 
 
-def parse_scoreboard(path: str, champion_names: List[str], icon_refs: Optional[Dict[str, list]] = None) -> dict:
+def parse_scoreboard(image, champion_names: List[str], icon_refs: Optional[Dict[str, list]] = None) -> dict:
     """OCR at a few zoom levels, keep the most complete reading of every cell,
-    then fill in champions from portrait icons and read the round orbs."""
-    import cv2
-
-    img = cv2.imread(path)
+    then fill in champions from portrait icons and read the round orbs.
+    image: raw bytes or a file path."""
+    img = _load_image(image)
     if img is None:
         return {"ok": False, "warnings": ["Couldn't open the image"]}
     h, w = img.shape[:2]
@@ -282,7 +341,7 @@ def parse_scoreboard(path: str, champion_names: List[str], icon_refs: Optional[D
     warnings: List[str] = []
     for side, label in (("your_team", "Your Team"), ("enemy_team", "Enemy Team")):
         for p in result[side]:
-            icon_champ, dist = match_icon(crop_icon(img, p["icon_box"]), icon_refs or {})
+            icon_champ, dist = match_icon(img, p["icon_box"], icon_refs or {})
             if icon_champ and not p["champion"]:
                 p["champion"], p["champion_source"] = icon_champ, "icon"
             elif icon_champ and icon_champ != p["champion"]:

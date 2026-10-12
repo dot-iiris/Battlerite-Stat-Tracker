@@ -16,7 +16,6 @@ from typing import List, Optional, Literal
 from itertools import combinations, permutations
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File
-from fastapi.responses import FileResponse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from starlette.middleware.cors import CORSMiddleware
@@ -292,6 +291,8 @@ async def startup():
     await db.players.create_index("discord_id", unique=True, sparse=True)
     await db.pending_matches.create_index("id", unique=True)
     await db.link_requests.create_index("id", unique=True)
+    await db.screenshots.create_index("id", unique=True)
+    await db.champion_icons.create_index("champion")
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -1609,11 +1610,10 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
     await db.matches.update_one({"id": match["id"]}, {"$set": {
         "source": pm.get("source"), "source_ref": pm.get("source_ref"), "map": pm.get("map"),
         "pending_match_id": pmid,
-        "screenshot_file": (pm.get("screenshot") or {}).get("file"),
+        "screenshot_id": pmid if pm.get("screenshot") else None,
     }})
     if pm.get("screenshot") and pm.get("prefill"):
-        confirmed = {p.player_id: p.champion for p in data.players}
-        await _run_ocr(_learn_icons, pm, confirmed)
+        await _learn_icons(pm, {p.player_id: p.champion for p in data.players})
     # Matches can be completed out of order: replay the season so MMR follows played_at.
     await recompute_season_elo(season_id)
     await db.pending_matches.update_one({"id": pmid}, {"$set": {
@@ -1624,18 +1624,20 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
 
 @api_router.delete("/pending-matches/{pmid}")
 async def discard_pending_match(pmid: str, user: dict = Depends(admin_required)):
-    await db.pending_matches.update_one({"id": pmid, "status": "pending"}, {"$set": {
+    res = await db.pending_matches.update_one({"id": pmid, "status": "pending"}, {"$set": {
         "status": "discarded", "discarded_at": _now_iso(),
     }})
+    if res.modified_count:
+        await db.screenshots.delete_one({"id": pmid})  # no match will point at it
     return {"ok": True}
 
 
 # --------- Scoreboard screenshots ---------
-UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or (ROOT_DIR / "uploads"))
-SCREENSHOT_DIR = UPLOAD_DIR / "screenshots"
-ICON_DIR = UPLOAD_DIR / "champion_icons"          # learned from admin-confirmed matches
-ICON_SEED_DIR = ROOT_DIR / "champion_icons_seed"  # shipped starter icons
+# Screenshots and learned champion icons live in MongoDB (not on disk), so they
+# survive redeploys on hosts that wipe the server's files.
+ICON_SEED_DIR = ROOT_DIR / "champion_icons_seed"  # shipped starter icons (read-only)
 MAX_ICONS_PER_CHAMPION = 40
+MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024           # MongoDB documents max out at 16 MB
 _ocr_pool = ThreadPoolExecutor(max_workers=1)     # OCR is CPU-heavy: one at a time, off the event loop
 _icon_refs = None
 
@@ -1644,49 +1646,54 @@ async def _run_ocr(fn, *args):
     return await asyncio.get_running_loop().run_in_executor(_ocr_pool, fn, *args)
 
 
-def _icon_refs_cached():
+async def _get_icon_refs():
     global _icon_refs
     if _icon_refs is None:
         import scoreboard
-        _icon_refs = scoreboard.load_icon_refs(str(ICON_SEED_DIR), str(ICON_DIR))
+        stored = [(d["champion"], d["png"]) for d in
+                  await db.champion_icons.find({}, {"_id": 0, "champion": 1, "png": 1}).to_list(5000)]
+        _icon_refs = await _run_ocr(lambda: scoreboard.load_icon_refs(str(ICON_SEED_DIR), stored=stored))
     return _icon_refs
 
 
-def _read_screenshot(path: str, team_a: list, team_b: list) -> dict:
-    try:
-        import scoreboard
-        parsed = scoreboard.parse_scoreboard(path, [c["name"] for c in CHAMPIONS], _icon_refs_cached())
-    except ImportError:
-        return {"parsed": None, "prefill": {"players": {}, "warnings": [
-            "Screenshot reading isn't installed on the server (rapidocr-onnxruntime, opencv-python)"]}}
-    except Exception as e:  # never lose the upload because the reader failed
-        logging.getLogger(__name__).exception("Scoreboard parse failed")
-        return {"parsed": None, "prefill": {"players": {}, "warnings": [f"Couldn't read the screenshot ({e.__class__.__name__})"]}}
+def _read_screenshot(data: bytes, team_a: list, team_b: list, refs) -> dict:
+    import scoreboard
+    parsed = scoreboard.parse_scoreboard(data, [c["name"] for c in CHAMPIONS], refs)
     return {"parsed": parsed, "prefill": scoreboard.assign_to_roster(parsed, team_a, team_b)}
 
 
-def _learn_icons(pm: dict, confirmed: dict):
-    """Save each confirmed champion's portrait from the screenshot as a reference icon."""
+def _icon_crops(data: bytes, prefill: dict, confirmed: dict) -> list:
+    """[(champion, player_id, png bytes)] for each confirmed player's portrait."""
+    import scoreboard
+    img = scoreboard._load_image(data)
+    if img is None:
+        return []
+    out = []
+    for pid, info in (prefill or {}).get("players", {}).items():
+        champ, box = confirmed.get(pid), info.get("icon_box")
+        if champ and box:
+            png = scoreboard.encode_icon(img, box)
+            if png:
+                out.append((champ, pid, png))
+    return out
+
+
+async def _learn_icons(pm: dict, confirmed: dict):
+    """Keep each confirmed champion's portrait as a reference for future screenshots."""
     global _icon_refs
+    shot = await db.screenshots.find_one({"id": pm["id"]})
+    if not shot:
+        return
     try:
-        import cv2
-        import scoreboard
+        crops = await _run_ocr(_icon_crops, bytes(shot["data"]), pm.get("prefill"), confirmed)
     except ImportError:
         return
-    img = cv2.imread(str(SCREENSHOT_DIR / pm["screenshot"]["file"]))
-    if img is None:
-        return
-    for pid, info in (pm.get("prefill") or {}).get("players", {}).items():
-        champ, box = confirmed.get(pid), info.get("icon_box")
-        if not champ or not box:
+    for champ, pid, png in crops:
+        if await db.champion_icons.count_documents({"champion": champ}) >= MAX_ICONS_PER_CHAMPION:
             continue
-        d = ICON_DIR / champ
-        d.mkdir(parents=True, exist_ok=True)
-        if len(list(d.glob("*.png"))) >= MAX_ICONS_PER_CHAMPION:
-            continue
-        icon = scoreboard.crop_icon(img, box)
-        if icon is not None:
-            cv2.imwrite(str(d / f"{pm['id']}_{pid}.png"), icon)
+        await db.champion_icons.insert_one({"id": str(uuid.uuid4()), "champion": champ, "png": png,
+                                            "pending_match_id": pm["id"], "player_id": pid,
+                                            "created_at": _now_iso()})
     _icon_refs = None  # reload next time
 
 
@@ -1701,8 +1708,16 @@ async def _roster(pm: dict):
 
 
 async def _parse_into_pending(pm: dict) -> dict:
+    shot = await db.screenshots.find_one({"id": pm["id"]})
     team_a, team_b = await _roster(pm)
-    res = await _run_ocr(_read_screenshot, str(SCREENSHOT_DIR / pm["screenshot"]["file"]), team_a, team_b)
+    try:
+        res = await _run_ocr(_read_screenshot, bytes(shot["data"]), team_a, team_b, await _get_icon_refs())
+    except ImportError:
+        res = {"parsed": None, "prefill": {"players": {}, "warnings": [
+            "Screenshot reading isn't installed on the server (rapidocr, onnxruntime, opencv-python-headless)"]}}
+    except Exception as e:  # never lose the upload because the reader failed
+        logging.getLogger(__name__).exception("Scoreboard parse failed")
+        res = {"parsed": None, "prefill": {"players": {}, "warnings": [f"Couldn't read the screenshot ({e.__class__.__name__})"]}}
     upd = {"ocr": res["parsed"], "prefill": res["prefill"], "parsed_at": _now_iso()}
     pre = res["prefill"]
     # Fill the round score from the orbs if nobody entered one
@@ -1722,44 +1737,47 @@ async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), upl
     if pm["status"] != "pending":
         raise HTTPException(409, f"This match was already {pm['status']}")
     ext = (Path(file.filename or "").suffix or ".png").lower()
-    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+    types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+    if ext not in types:
         raise HTTPException(400, "Upload a PNG, JPG or WEBP screenshot")
     data = await file.read()
-    if len(data) > 15 * 1024 * 1024:
-        raise HTTPException(400, "Screenshot is too big (max 15 MB)")
-    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    name = f"{pmid}{ext}"
-    (SCREENSHOT_DIR / name).write_bytes(data)
-    pm["screenshot"] = {"file": name, "uploaded_at": _now_iso(),
-                        "uploaded_by": uploaded_by or user.get("name") or user.get("email")}
-    await db.pending_matches.update_one({"id": pmid}, {"$set": {"screenshot": pm["screenshot"]}})
+    if len(data) > MAX_SCREENSHOT_BYTES:
+        raise HTTPException(400, "Screenshot is too big (max 12 MB)")
+    meta = {"file": f"{pmid}{ext}", "uploaded_at": _now_iso(),
+            "uploaded_by": uploaded_by or user.get("name") or user.get("email")}
+    await db.screenshots.replace_one({"id": pmid}, {
+        "id": pmid, "data": data, "content_type": types[ext], "size": len(data), **meta,
+    }, upsert=True)
+    await db.pending_matches.update_one({"id": pmid}, {"$set": {"screenshot": meta}})
+    pm["screenshot"] = meta
     return await _parse_into_pending(pm)
 
 
 @api_router.post("/pending-matches/{pmid}/reparse")
 async def reparse_pending_screenshot(pmid: str, user: dict = Depends(admin_required)):
     pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
-    if not pm or not pm.get("screenshot"):
+    if not pm or not await db.screenshots.find_one({"id": pmid}, {"_id": 1}):
         raise HTTPException(404, "No screenshot for this match")
     return await _parse_into_pending(pm)
 
 
+async def _screenshot_response(sid: Optional[str]):
+    shot = await db.screenshots.find_one({"id": sid}) if sid else None
+    if not shot:
+        raise HTTPException(404, "No screenshot")
+    return Response(content=bytes(shot["data"]), media_type=shot.get("content_type", "image/png"),
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
 @api_router.get("/pending-matches/{pmid}/screenshot")
 async def get_pending_screenshot(pmid: str):
-    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
-    f = (pm or {}).get("screenshot", {}).get("file")
-    if not f or not (SCREENSHOT_DIR / f).exists():
-        raise HTTPException(404, "No screenshot")
-    return FileResponse(SCREENSHOT_DIR / f)
+    return await _screenshot_response(pmid)
 
 
 @api_router.get("/matches/{mid}/screenshot")
 async def get_match_screenshot(mid: str):
     m = await db.matches.find_one({"id": mid}, {"_id": 0})
-    f = (m or {}).get("screenshot_file")
-    if not f or not (SCREENSHOT_DIR / f).exists():
-        raise HTTPException(404, "No screenshot")
-    return FileResponse(SCREENSHOT_DIR / f)
+    return await _screenshot_response((m or {}).get("screenshot_id"))
 
 
 class IgnInput(BaseModel):

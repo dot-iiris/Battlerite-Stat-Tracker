@@ -91,5 +91,3 @@ credentials.json
 *.key
 .credentials
 
-# Uploaded scoreboard screenshots and learned champion icons
-backend/uploads/
