@@ -515,7 +515,10 @@ async def _finish_discord_login(du: dict, front: str):
                 "discord_id": discord_id, "discord_name": du.get("username"), "discord_avatar": du.get("avatar"),
                 "created_at": _now_iso()}
         await db.users.insert_one({**user})
-    linked = await db.players.find_one({"discord_id": discord_id}, {"_id": 0, "id": 1})
+    linked = await db.players.find_one({"discord_id": discord_id}, {"_id": 0, "id": 1, "discord_name": 1})
+    if linked and du.get("username") and linked.get("discord_name") != du["username"]:
+        # e.g. an admin linked them by user ID only, or they renamed on Discord
+        await db.players.update_one({"id": linked["id"]}, {"$set": {"discord_name": du["username"]}})
     resp = RedirectResponse(f"{front}/me" if linked else f"{front}/me?setup=1", status_code=302)
     _set_session_cookie(resp, create_access_token(user["id"], user["email"]))
     resp.delete_cookie("discord_oauth_state", path="/")
@@ -1719,13 +1722,6 @@ async def set_player_discord(pid: str, data: DiscordLinkInput, user: dict = Depe
         await db.link_requests.update_many({"discord_id": did, "status": "pending"}, {"$set": {
             "status": "superseded", "decided_by": user.get("name") or "admin", "decided_at": _now_iso()}})
     return await db.players.find_one({"id": pid}, {"_id": 0})
-
-
-@api_router.get("/players/discord-links")
-async def player_discord_links(user: dict = Depends(admin_or_bot)):
-    """Linked players with their Discord ID and the username we have stored (the bot keeps these fresh)."""
-    return await db.players.find({"discord_id": {"$exists": True, "$ne": None}},
-                                 {"_id": 0, "id": 1, "name": 1, "discord_id": 1, "discord_name": 1}).to_list(5000)
 
 
 class PlayerUpdate(BaseModel):
