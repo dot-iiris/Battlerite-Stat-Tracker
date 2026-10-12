@@ -4,6 +4,15 @@ import { toast } from "sonner";
 import { X, Save } from "lucide-react";
 import { invalidateChampionStats } from "@/lib/championStats";
 
+const STAT_FIELDS = ["score", "damage", "protection", "disables"];
+const SHORT = { score: "score", damage: "dmg", protection: "prot", disables: "disables" };
+const statStr = (v) => (v === null || v === undefined ? "" : String(v));
+const toSlot = (p) => ({
+  player_id: p.player_id, champion: p.champion,
+  ...Object.fromEntries(STAT_FIELDS.map((f) => [f, statStr(p.stats?.[f])])),
+});
+const emptySlot = () => ({ player_id: "", champion: "", score: "", damage: "", protection: "", disables: "" });
+
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
 export default function EditMatchDialog({ match, onClose, onSaved }) {
@@ -14,8 +23,8 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
   const [seasonId, setSeasonId] = useState(match.season_id);
   const [teamARounds, setTeamARounds] = useState(match.team_a_rounds);
   const [teamBRounds, setTeamBRounds] = useState(match.team_b_rounds);
-  const [teamA, setTeamA] = useState(match.players.filter((p) => p.team === "A").map((p) => ({ player_id: p.player_id, champion: p.champion })));
-  const [teamB, setTeamB] = useState(match.players.filter((p) => p.team === "B").map((p) => ({ player_id: p.player_id, champion: p.champion })));
+  const [teamA, setTeamA] = useState(match.players.filter((p) => p.team === "A").map(toSlot));
+  const [teamB, setTeamB] = useState(match.players.filter((p) => p.team === "B").map(toSlot));
   const [notes, setNotes] = useState(match.notes || "");
   const [submitting, setSubmitting] = useState(false);
 
@@ -36,8 +45,8 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
   const applyFormat = (fmt) => {
     setFormat(fmt);
     const size = { "1v1": 1, "2v2": 2, "3v3": 3 }[fmt];
-    setTeamA((cur) => Array.from({ length: size }, (_, i) => cur[i] || { player_id: "", champion: "" }));
-    setTeamB((cur) => Array.from({ length: size }, (_, i) => cur[i] || { player_id: "", champion: "" }));
+    setTeamA((cur) => Array.from({ length: size }, (_, i) => cur[i] || emptySlot()));
+    setTeamB((cur) => Array.from({ length: size }, (_, i) => cur[i] || emptySlot()));
   };
 
   const setSlot = (side, idx, key, val) => {
@@ -61,7 +70,13 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
       await api.put(`/matches/${match.id}`, {
         season_id: seasonId, format, notes,
         team_a_rounds: Number(teamARounds), team_b_rounds: Number(teamBRounds),
-        players: all.map((s) => ({ player_id: s.player_id, champion: s.champion, role: getChampRole(s.champion), team: s.team })),
+        players: all.map((s) => {
+          const filled = STAT_FIELDS.some((f) => s[f] !== "");
+          return {
+            player_id: s.player_id, champion: s.champion, role: getChampRole(s.champion), team: s.team,
+            stats: filled ? Object.fromEntries(STAT_FIELDS.map((f) => [f, s[f] === "" ? null : Number(s[f])])) : null,
+          };
+        }),
       });
       invalidateChampionStats();
       toast.success("Match updated · ELO recomputed");
@@ -76,7 +91,7 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
       <h4 className={`font-heading text-base font-black uppercase mb-3 ${color}`}>Team {side}</h4>
       <div className="space-y-2">
         {roster.map((slot, i) => (
-          <div key={`${side}-${i}`} className="grid grid-cols-2 gap-2">
+          <div key={`${side}-${i}`} className="grid grid-cols-2 gap-2 pb-2 border-b border-[#1B2438]/60 last:border-0">
             <select value={slot.player_id} onChange={(e) => setSlot(side, i, "player_id", e.target.value)}
               className="bg-[#121828] border border-[#1B2438] rounded px-2 py-1.5 text-sm" data-testid={`edit-player-${side}-${i}`}>
               <option value="">Player…</option>
@@ -91,6 +106,14 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
                 return <option key={c.name} value={c.name} disabled={dup}>{c.name} ({c.role}){dup ? " · in team" : ""}</option>;
               })}
             </select>
+            <div className="col-span-2 grid grid-cols-4 gap-1.5">
+              {STAT_FIELDS.map((f) => (
+                <input key={f} type="number" min="0" placeholder={SHORT[f]} title={`${f} (round average)`} value={slot[f]}
+                  onChange={(e) => setSlot(side, i, f, e.target.value)}
+                  className="bg-[#0C101B] border border-[#1B2438] focus:border-cyan-400 focus:outline-none rounded px-1.5 py-1 text-xs font-mono-hud min-w-0"
+                  data-testid={`edit-${f}-${side}-${i}`} />
+              ))}
+            </div>
           </div>
         ))}
       </div>
@@ -125,6 +148,7 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
               <input value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-[#121828] border border-[#1B2438] rounded px-2 py-1.5 text-sm" data-testid="edit-notes" />
             </div>
           </div>
+          <div className="text-[11px] text-slate-500">Stats under each player are optional round averages (score · damage · protection · disables) from the Average Total tab.</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
             {renderTeam("A", teamA, "text-cyan-400")}
             {renderTeam("B", teamB, "text-[#FF2E55]")}

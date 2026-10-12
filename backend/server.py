@@ -1586,6 +1586,20 @@ async def list_pending_matches(status: Optional[str] = "pending", user: dict = D
     return await db.pending_matches.find(q, {"_id": 0}).sort("played_at", 1).to_list(500)
 
 
+@api_router.get("/pending-matches/{pmid}")
+async def get_pending_match(pmid: str, user: dict = Depends(admin_or_bot)):
+    """Status of one reported match; once logged, includes the final match and its stats."""
+    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0, "ocr": 0})
+    if not pm:
+        raise HTTPException(404, "Pending match not found")
+    if pm.get("match_id"):
+        m = await db.matches.find_one({"id": pm["match_id"]}, {"_id": 0})
+        if m:
+            pm["match"] = m
+            pm["match_stats"] = normalize_match_stats(m)
+    return pm
+
+
 @api_router.post("/pending-matches/{pmid}/complete")
 async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: dict = Depends(admin_required)):
     pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
