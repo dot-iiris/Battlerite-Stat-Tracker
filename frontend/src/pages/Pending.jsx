@@ -158,7 +158,7 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
             <img src={shotUrl} alt="Scoreboard screenshot" className="w-full rounded border border-[#1B2438]" />
           </a>
         ) : (
-          <div className="text-xs text-slate-500">No screenshot yet.</div>
+          <div className="text-xs text-amber-400">No screenshot - enter the result by hand, or upload one.</div>
         )}
         <div className="flex-1 min-w-[12rem] space-y-2">
           {warnings.length > 0 && (
