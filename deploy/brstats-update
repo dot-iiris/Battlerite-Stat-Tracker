@@ -31,7 +31,13 @@ GENERATE_SOURCEMAP=false
 EOF
 cd "$SITE/frontend"
 as_app npx --yes yarn@1.22.22 install --network-timeout 600000
-as_app npx --yes yarn@1.22.22 build
+# build next to the live site, then swap it in, so the site never goes down mid-build
+rm -rf build.new build.old
+as_app env BUILD_PATH=build.new npx --yes yarn@1.22.22 build
+[ -f build.new/index.html ] || { echo "Build failed - the site was left as it was"; exit 1; }
+[ -d build ] && mv build build.old
+mv build.new build
+rm -rf build.old
 
 if [ -f "$APP/bot/requirements.txt" ]; then
   log "Bot packages"
@@ -39,10 +45,10 @@ if [ -f "$APP/bot/requirements.txt" ]; then
   as_app "$APP/bot/.venv/bin/pip" install -q --disable-pip-version-check -r "$APP/bot/requirements.txt"
 fi
 
-for s in brstats-api brstats-bot; do
-  if systemctl is-enabled --quiet "$s" 2>/dev/null; then
-    systemctl restart "$s"
-    log "Restarted $s"
-  fi
-done
+# the website backend picks up the new code; the bot isn't touched (its code and
+# settings only change through upload-to-oracle / brstats-finish)
+if systemctl is-enabled --quiet brstats-api 2>/dev/null; then
+  systemctl restart brstats-api
+  log "Restarted the website backend (the bot kept running)"
+fi
 log "Done"
