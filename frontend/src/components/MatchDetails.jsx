@@ -61,6 +61,30 @@ export default function MatchDetails({ match, playerName, seasonName }) {
     );
   });
 
+  // Who played what - shown when the match has no scoreboard stats
+  const lineup = (team) => {
+    const won = match.winner_team === team;
+    return (
+      <div className="min-w-0">
+        <div className={`font-heading font-black uppercase tracking-wide text-sm mb-1 ${team === "A" ? "text-cyan-400" : "text-[#FF2E55]"}`}>
+          Team {team} {won && <span className="text-[10px] font-mono-hud text-[#00E676] ml-1">WIN</span>}
+        </div>
+        {match.players.filter((p) => p.team === team).map((p) => (
+          <div key={`${team}-${p.player_id}`} className="flex items-center gap-2 py-1.5 border-t border-[#1B2438]">
+            <ChampionPortrait name={p.champion} role={p.role} size={24} />
+            <div className="min-w-0 flex-1">
+              <Link to={`/players/${p.player_id}`} className="block text-sm font-medium hover:text-cyan-400 truncate">{playerName(p.player_id)}</Link>
+              <div className="text-[10px] font-mono-hud text-slate-500 truncate">{p.champion}</div>
+            </div>
+            <span className={`font-mono-hud text-xs ${p.elo_delta >= 0 ? "text-[#00E676]" : "text-[#FF2E55]"}`}>
+              {p.elo_delta >= 0 ? "+" : ""}{p.elo_delta}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const header = (team, won) => (
     <tr>
       <th className={`text-left py-2 pr-3 font-heading font-black uppercase tracking-wide ${team === "A" ? "text-cyan-400" : "text-[#FF2E55]"}`}>
@@ -91,10 +115,16 @@ export default function MatchDetails({ match, playerName, seasonName }) {
 
       {error ? (
         <div className="text-sm text-slate-500">Couldn't load stats for this match.</div>
-      ) : !stats ? (
-        <div className="text-sm text-slate-500 font-mono-hud">Loading stats…</div>
-      ) : !hasStats ? (
-        <div className="text-sm text-slate-500">No scoreboard stats were recorded for this match.</div>
+      ) : !stats || !hasStats ? (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+            {lineup("A")}
+            {lineup("B")}
+          </div>
+          <div className="text-[11px] text-slate-500 font-mono-hud">
+            {!stats ? "Loading stats…" : "No scoreboard stats were recorded for this match."}
+          </div>
+        </>
       ) : (
         <>
           <div className="overflow-x-auto">

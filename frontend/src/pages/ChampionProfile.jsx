@@ -190,7 +190,7 @@ export default function ChampionProfile() {
               const icons = (team) => (
                 <span className={`flex items-center gap-1 ${(team === "A") === won_a ? "" : "opacity-50"}`}>
                   {m.players.filter((p) => p.team === team).map((p) => (
-                    <span key={p.player_id} className={p.champion === stats.champion ? "rounded ring-2 ring-[#FFB800]" : ""}>
+                    <span key={p.player_id} className={`inline-flex leading-[0] rounded ${p.champion === stats.champion ? "ring-2 ring-[#FFB800] ring-offset-1 ring-offset-[#121828]" : ""}`}>
                       <ChampionPortrait name={p.champion} role={p.role} size={26} linkToProfile={false} />
                     </span>
                   ))}
