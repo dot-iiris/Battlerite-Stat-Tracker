@@ -21,6 +21,10 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
       return [r.id, { champion: pre.champion || "", score: val("score"), damage: val("damage"), protection: val("protection"), disables: val("disables") }];
     }))
   );
+  const [teams, setTeams] = useState(() =>
+    Object.fromEntries(roster.map((r) => [r.id, pm.prefill?.teams?.[r.id] || r.team]))
+  );
+  const swapTeam = (pid) => setTeams((t) => ({ ...t, [pid]: t[pid] === "A" ? "B" : "A" }));
   const [aRounds, setARounds] = useState(pm.team_a_rounds ?? "");
   const [bRounds, setBRounds] = useState(pm.team_b_rounds ?? "");
   const [busy, setBusy] = useState(false);
@@ -62,8 +66,9 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
     for (const r of roster) {
       if (!picks[r.id].champion) { toast.error(`Pick a champion for ${playerName(r.id)}`); return; }
     }
+    if (roster.filter((r) => teams[r.id] === "A").length * 2 !== roster.length) { toast.error("Both teams need the same number of players"); return; }
     for (const team of ["A", "B"]) {
-      const champs = roster.filter((r) => r.team === team).map((r) => picks[r.id].champion);
+      const champs = roster.filter((r) => teams[r.id] === team).map((r) => picks[r.id].champion);
       if (new Set(champs).size !== champs.length) { toast.error(`Team ${team} has the same champion twice`); return; }
     }
     if (aRounds === "" || bRounds === "") { toast.error("Enter the round score"); return; }
@@ -74,7 +79,7 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
       const stats = filled.length
         ? Object.fromEntries(STAT_FIELDS.map((f) => [f, p[f] === "" ? null : Number(p[f])]))
         : null;
-      return { player_id: r.id, champion: p.champion, stats };
+      return { player_id: r.id, champion: p.champion, team: teams[r.id], stats };
     });
     setBusy(true);
     try {
@@ -106,10 +111,14 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
   const renderTeam = (team, color) => (
     <div className="space-y-2">
       <div className={`font-heading font-black uppercase tracking-wide ${color}`}>Team {team}</div>
-      {roster.filter((r) => r.team === team).map((r) => (
+      {roster.filter((r) => teams[r.id] === team).map((r) => (
         <div key={r.id} className="grid grid-cols-2 sm:grid-cols-6 gap-2 items-center">
           <div className="col-span-2 sm:col-span-1 min-w-0">
-            <div className="text-sm font-semibold truncate">{playerName(r.id)}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-semibold truncate">{playerName(r.id)}</span>
+              <button type="button" onClick={() => swapTeam(r.id)} title="Move to the other team"
+                className="text-[10px] font-mono-hud text-slate-500 hover:text-cyan-400 border border-[#1B2438] rounded px-1">⇄</button>
+            </div>
             {prefill[r.id]?.ocr_name && (
               <div className={`text-[10px] font-mono-hud truncate ${prefill[r.id].name_confidence < 0.6 ? "text-amber-400" : "text-slate-500"}`}
                 title="Name read from the screenshot">

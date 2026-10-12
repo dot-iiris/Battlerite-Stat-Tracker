@@ -1503,6 +1503,7 @@ class PendingMatchCreate(BaseModel):
 class PendingPlayerInput(BaseModel):
     player_id: str
     champion: str
+    team: Optional[Literal["A", "B"]] = None   # override if players swapped teams in game
     role: Optional[str] = None          # defaults to the champion's role
     stats: Optional[PlayerStats] = None
 
@@ -1578,6 +1579,11 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
     given = {p.player_id for p in data.players}
     if given != set(team_of):
         raise HTTPException(400, "Players must match the reported teams")
+    for p in data.players:
+        if p.team:
+            team_of[p.player_id] = p.team
+    if list(team_of.values()).count("A") != len(team_of) // 2:
+        raise HTTPException(400, "Both teams need the same number of players")
     players = []
     for p in data.players:
         role = p.role or CHAMPION_ROLES.get(p.champion)

@@ -314,8 +314,9 @@ def parse_scoreboard(path: str, champion_names: List[str], icon_refs: Optional[D
 def assign_to_roster(parsed: dict, team_a: List[dict], team_b: List[dict]) -> dict:
     """Work out which side of the screenshot is Team A, and which row is which player.
 
-    team_a / team_b: [{"id", "names": [website name, in-game name, ...]}].
-    Tries "Your Team = A" and "Your Team = B" and keeps the better name match.
+    team_a / team_b: [{"id", "names": [website name, in-game name, ...]}] - the teams the bot made.
+    Normally "Your Team" is one of those teams. If the names show players swapped
+    teams, the screenshot's teams are proposed instead (returned in "teams").
     """
     from itertools import permutations
 
@@ -324,26 +325,46 @@ def assign_to_roster(parsed: dict, team_a: List[dict], team_b: List[dict]) -> di
 
     def best_match(rows, players):
         if len(rows) != len(players):
-            return None, 0.0
+            return None, -1.0
         best, best_s = None, -1.0
         for perm in permutations(players):
-            s = sum(name_score(r, p) for r, p in zip(rows, perm))
-            if s > best_s:
-                best, best_s = list(zip(rows, perm)), s
+            sc = sum(name_score(r, p) for r, p in zip(rows, perm))
+            if sc > best_s:
+                best, best_s = list(zip(rows, perm)), sc
         return best, best_s
 
     your, enemy = parsed.get("your_team") or [], parsed.get("enemy_team") or []
+    warnings = list(parsed.get("warnings") or [])
+    everyone = team_a + team_b
+    if len(your) + len(enemy) != len(everyone) or len(your) != len(enemy):
+        warnings.append("The screenshot's team sizes don't match this match")
+        return {"players": {}, "teams": {}, "team_a_rounds": None, "team_b_rounds": None, "warnings": warnings}
+
+    # 1) bot's teams kept: Your Team is either A or B
     options = []
     for your_side, yours, theirs in (("A", team_a, team_b), ("B", team_b, team_a)):
         m1, s1 = best_match(your, yours)
         m2, s2 = best_match(enemy, theirs)
-        if m1 is not None and m2 is not None:
-            options.append((s1 + s2, your_side, m1 + m2))
-    warnings = list(parsed.get("warnings") or [])
-    if not options:
-        warnings.append("The screenshot's team sizes don't match this match's teams")
-        return {"players": {}, "team_a_rounds": None, "team_b_rounds": None, "warnings": warnings}
-    _total, your_side, pairs = max(options, key=lambda o: o[0])
+        options.append((s1 + s2, your_side, m1 + m2))
+    kept_score, your_side, pairs = max(options, key=lambda o: o[0])
+    teams = {p["id"]: ("A" if p in team_a else "B") for p in everyone}
+
+    # 2) any rows to any players - if clearly better, players swapped teams in game
+    free, free_score = best_match(your + enemy, everyone)
+
+    def strong(prs):  # rows whose name clearly matches (similar names like Iris/Sirius don't count)
+        return sum(name_score(r, p) >= 0.9 for r, p in prs)
+
+    if strong(free) > strong(pairs) or free_score > kept_score + 0.5:
+        pairs = free
+        your_ids = [pl["id"] for _, pl in free[:len(your)]]
+        a_ids = {p["id"] for p in team_a}
+        your_side = "A" if sum(i in a_ids for i in your_ids) * 2 >= len(your_ids) else "B"
+        enemy_side = "B" if your_side == "A" else "A"
+        teams = {pl["id"]: (your_side if i < len(your) else enemy_side) for i, (_, pl) in enumerate(free)}
+        warnings.append("Players were on different teams in the game than the bot planned - "
+                        "teams below follow the screenshot. Please check.")
+
     players = {}
     for row, player in pairs:
         conf = round(name_score(row, player), 2)
@@ -358,5 +379,5 @@ def assign_to_roster(parsed: dict, team_a: List[dict], team_b: List[dict]) -> di
     a_r, b_r = (yr, er) if your_side == "A" else (er, yr)
     if a_r is not None and b_r is not None and a_r == b_r:
         warnings.append("Round orbs look tied - please check the score")
-    return {"players": players, "team_a_rounds": a_r, "team_b_rounds": b_r,
+    return {"players": players, "teams": teams, "team_a_rounds": a_r, "team_b_rounds": b_r,
             "your_team_side": your_side, "warnings": warnings}
