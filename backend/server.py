@@ -293,6 +293,7 @@ async def startup():
     await db.link_requests.create_index("id", unique=True)
     await db.screenshots.create_index("id", unique=True)
     await db.champion_icons.create_index("champion")
+    await db.ocr_feedback.create_index("created_at")
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -1651,6 +1652,8 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
     }})
     if pm.get("screenshot") and pm.get("prefill"):
         await _learn_icons(pm, {p.player_id: p.champion for p in data.players})
+        final = await db.matches.find_one({"id": match["id"]}, {"_id": 0})
+        await _record_ocr_feedback(pm, final)
     # Matches can be completed out of order: replay the season so MMR follows played_at.
     await recompute_season_elo(season_id)
     await db.pending_matches.update_one({"id": pmid}, {"$set": {
@@ -1930,6 +1933,96 @@ async def push_leaderboard_now(user: dict = Depends(admin_required)):
         raise HTTPException(400, "DISCORD_LEADERBOARD_WEBHOOK_URL isn't set in backend/.env")
     await push_leaderboard()
     return {"ok": True}
+
+
+# --------- Screenshot reading accuracy ---------
+# Every time an admin logs a match that came with a screenshot, compare what the
+# reader suggested with what the admin actually logged. Nothing here changes how
+# screenshots are read - it measures how often (and where) the reader is wrong.
+OCR_FIELDS = ("score", "damage", "protection", "disables", "champion", "team", "rounds")
+
+
+def _ocr_outcome(read, final) -> Optional[str]:
+    if final is None or final == "":
+        return None          # admin left it empty: nothing to compare against
+    if read is None or read == "":
+        return "missed"
+    return "correct" if read == final else "wrong"
+
+
+async def _record_ocr_feedback(pm: dict, final: dict):
+    pre = pm.get("prefill") or {}
+    read_players = pre.get("players") or {}
+    read_teams = pre.get("teams") or {}
+    items = []
+    for p in final.get("players", []):
+        r = read_players.get(p["player_id"]) or {}
+        rs, fs = r.get("stats") or {}, p.get("stats") or {}
+        for f in ("score", "damage", "protection", "disables"):
+            out = _ocr_outcome(rs.get(f), fs.get(f))
+            if out:
+                items.append({"player_id": p["player_id"], "field": f, "read": rs.get(f), "final": fs.get(f), "outcome": out})
+        out = _ocr_outcome(r.get("champion"), p["champion"])
+        items.append({"player_id": p["player_id"], "field": "champion", "read": r.get("champion"),
+                      "final": p["champion"], "outcome": out, "source": r.get("champion_source")})
+        if read_teams:
+            items.append({"player_id": p["player_id"], "field": "team", "read": read_teams.get(p["player_id"]),
+                          "final": p["team"], "outcome": _ocr_outcome(read_teams.get(p["player_id"]), p["team"])})
+    read_score = (pre.get("team_a_rounds"), pre.get("team_b_rounds"))
+    final_score = (final["team_a_rounds"], final["team_b_rounds"])
+    items.append({"player_id": None, "field": "rounds",
+                  "read": None if None in read_score else f"{read_score[0]}-{read_score[1]}",
+                  "final": f"{final_score[0]}-{final_score[1]}",
+                  "outcome": "missed" if None in read_score else ("correct" if read_score == final_score else "wrong")})
+    size = (pm.get("ocr") or {}).get("image_size") or [None, None]
+    await db.ocr_feedback.insert_one({
+        "id": str(uuid.uuid4()), "pending_match_id": pm["id"], "match_id": final["id"],
+        "image_width": size[0], "image_height": size[1],
+        "created_at": _now_iso(), "items": [i for i in items if i["outcome"]],
+    })
+
+
+def _resolution_label(h: Optional[int]) -> str:
+    if not h:
+        return "unknown"
+    for limit, label in ((800, "≤720p"), (1200, "1080p"), (1500, "1440p")):
+        if h < limit:
+            return label
+    return "4K+"
+
+
+@api_router.get("/admin/ocr-accuracy")
+async def ocr_accuracy(user: dict = Depends(admin_required)):
+    docs = await db.ocr_feedback.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(5000)}
+
+    def blank():
+        return {"correct": 0, "wrong": 0, "missed": 0}
+
+    by_field = {f: blank() for f in OCR_FIELDS}
+    by_res: dict = {}
+    corrections = []
+    for d in docs:
+        res = _resolution_label(d.get("image_height"))
+        by_res.setdefault(res, {"screenshots": 0, **blank()})
+        by_res[res]["screenshots"] += 1
+        for it in d["items"]:
+            by_field.setdefault(it["field"], blank())[it["outcome"]] += 1
+            by_res[res][it["outcome"]] += 1
+            if it["outcome"] != "correct" and len(corrections) < 25:
+                corrections.append({**it, "player": players.get(it["player_id"]) if it["player_id"] else None,
+                                    "resolution": res, "match_id": d["match_id"], "at": d["created_at"]})
+
+    def rate(c):
+        total = c["correct"] + c["wrong"] + c["missed"]
+        return round(c["correct"] / total * 100, 1) if total else None
+
+    return {
+        "screenshots": len(docs),
+        "fields": [{"field": f, **c, "accuracy": rate(c)} for f, c in by_field.items()],
+        "resolutions": [{"resolution": r, **c, "accuracy": rate(c)} for r, c in sorted(by_res.items())],
+        "recent_corrections": corrections,
+    }
 
 
 # --------- Scoreboard stat normalisation (derived, never stored) ---------
