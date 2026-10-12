@@ -1,7 +1,7 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { prefetchPage } from "@/api";
 import { useAuth } from "@/AuthContext";
-import { Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle } from "lucide-react";
+import { EyeOff, ShieldCheck, Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle } from "lucide-react";
 
 const links = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
@@ -18,7 +18,7 @@ const links = [
 ];
 
 export default function Layout({ children }) {
-  const { user, logout, isAdmin, isGuest } = useAuth();
+  const { user, logout, isAdmin, isGuest, isRealAdmin, viewAsUser, setViewAsUser } = useAuth();
   const nav = useNavigate();
 
   const visibleLinks = links.filter((l) => (!l.adminOnly || isAdmin) && (!l.discordOnly || user?.discord_id));
@@ -70,7 +70,17 @@ export default function Layout({ children }) {
             ) : !isGuest && user?.email && (
               <span className="hidden md:inline font-mono-hud text-xs text-slate-400" data-testid="nav-user-email">{user.email}</span>
             )}
-            {user?.role && (
+            {isRealAdmin ? (
+              // admins: switch between the admin view and what players see
+              <button type="button" onClick={() => setViewAsUser(!viewAsUser)} data-testid="nav-view-as-user"
+                title={viewAsUser ? "Back to the admin view" : "See the site the way players do"}
+                className={`text-[10px] font-mono-hud uppercase tracking-wider px-2 py-0.5 border rounded flex items-center gap-1 transition-colors ${
+                  viewAsUser ? "text-cyan-400 border-cyan-400/40 bg-cyan-400/10 hover:border-[#FFB800]/60"
+                  : "text-[#FFB800] border-[#FFB800]/50 bg-[#FFB800]/10 hover:bg-[#FFB800]/20"
+                }`}>
+                {viewAsUser ? <><Eye className="w-3 h-3" /> player view</> : <><ShieldCheck className="w-3 h-3" /> admin</>}
+              </button>
+            ) : user?.role && (
               <span
                 className={`text-[10px] font-mono-hud uppercase tracking-wider px-2 py-0.5 border rounded flex items-center gap-1 ${
                   isAdmin ? "text-[#FFB800] border-[#FFB800]/50 bg-[#FFB800]/10"
@@ -96,11 +106,25 @@ export default function Layout({ children }) {
             {mainLinks.map(tab)}
           </div>
         </nav>
+        {viewAsUser && (
+          <div className="border-t border-[#FFB800]/30 bg-[#FFB800]/[0.06]" data-testid="view-as-user-banner">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-1.5 flex items-center justify-between gap-3 text-xs font-mono-hud">
+              <span className="text-[#FFB800]/90 flex items-center gap-1.5"><Eye className="w-3.5 h-3.5" /> Viewing as a player - admin tools are hidden</span>
+              <button type="button" onClick={() => setViewAsUser(false)} className="uppercase tracking-wider text-[#FFB800] hover:text-white flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5" /> Back to admin view
+              </button>
+            </div>
+          </div>
+        )}
         {adminLinks.length > 0 && (
           <nav className="border-t border-[#1B2438] bg-[#FFB800]/[0.03]" data-testid="nav-admin">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap items-center gap-x-1">
               <span className="pr-2 text-[10px] font-mono-hud uppercase tracking-[0.2em] text-[#FFB800]/70">Admin</span>
               {adminLinks.map(tab)}
+              <button type="button" onClick={() => setViewAsUser(true)} data-testid="nav-admin-view-as-user"
+                className="ml-auto flex items-center gap-1.5 px-3 py-3 text-xs font-mono-hud uppercase tracking-wider text-slate-500 hover:text-slate-200">
+                <EyeOff className="w-3.5 h-3.5" /> View as user
+              </button>
             </div>
           </nav>
         )}

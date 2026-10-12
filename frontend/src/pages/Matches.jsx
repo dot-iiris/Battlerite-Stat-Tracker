@@ -98,13 +98,13 @@ export default function Matches() {
             <Send className="w-4 h-4" /> Post {logStatus.unposted} old to match log
           </button>
         )}
-        <a
+        {isAdmin && <a
           href={`${process.env.REACT_APP_BACKEND_URL}/api/exports/matches.csv${seasonFilter ? `?season_id=${seasonFilter}` : ""}`}
           className="btn-glow bg-cyan-400 hover:bg-cyan-300 text-black font-mono-hud font-bold uppercase tracking-wider text-xs px-4 py-2.5 rounded flex items-center gap-2"
           data-testid="matches-export-csv"
         >
           <Download className="w-4 h-4" strokeWidth={3} /> Export CSV
-        </a>
+        </a>}
         </div>
       </div>
 
