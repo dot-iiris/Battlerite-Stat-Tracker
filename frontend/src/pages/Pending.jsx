@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import api from "@/api";
+import api, { API } from "@/api";
 import { toast } from "sonner";
-import { CheckCircle2, Inbox, Link2, Trash2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ImageUp, Inbox, Link2, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { invalidateChampionStats } from "@/lib/championStats";
 
 const STAT_FIELDS = ["score", "damage", "protection", "disables"];
@@ -12,12 +12,49 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
     ...pm.team_a.map((id) => ({ id, team: "A" })),
     ...pm.team_b.map((id) => ({ id, team: "B" })),
   ];
+  const prefill = pm.prefill?.players || {};
   const [picks, setPicks] = useState(() =>
-    Object.fromEntries(roster.map((r) => [r.id, { champion: "", score: "", damage: "", protection: "", disables: "" }]))
+    Object.fromEntries(roster.map((r) => {
+      const pre = prefill[r.id] || {};
+      const st = pre.stats || {};
+      const val = (f) => (st[f] === null || st[f] === undefined ? "" : String(st[f]));
+      return [r.id, { champion: pre.champion || "", score: val("score"), damage: val("damage"), protection: val("protection"), disables: val("disables") }];
+    }))
   );
-  const [aRounds, setARounds] = useState(pm.team_a_rounds);
-  const [bRounds, setBRounds] = useState(pm.team_b_rounds);
+  const [aRounds, setARounds] = useState(pm.team_a_rounds ?? "");
+  const [bRounds, setBRounds] = useState(pm.team_b_rounds ?? "");
   const [busy, setBusy] = useState(false);
+  const warnings = pm.prefill?.warnings || [];
+  const shotUrl = pm.screenshot ? `${API}/pending-matches/${pm.id}/screenshot?v=${encodeURIComponent(pm.screenshot.uploaded_at)}` : null;
+
+  const upload = async (file) => {
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    setBusy(true);
+    try {
+      await api.post(`/pending-matches/${pm.id}/screenshot`, form);
+      toast.success("Screenshot read — check the values");
+      onDone();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reparse = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/pending-matches/${pm.id}/reparse`);
+      toast.success("Read the screenshot again");
+      onDone();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const set = (pid, key, val) => setPicks((p) => ({ ...p, [pid]: { ...p[pid], [key]: val } }));
 
@@ -29,6 +66,7 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
       const champs = roster.filter((r) => r.team === team).map((r) => picks[r.id].champion);
       if (new Set(champs).size !== champs.length) { toast.error(`Team ${team} has the same champion twice`); return; }
     }
+    if (aRounds === "" || bRounds === "") { toast.error("Enter the round score"); return; }
     if (Number(aRounds) === Number(bRounds)) { toast.error("Rounds cannot be tied"); return; }
     const players = roster.map((r) => {
       const p = picks[r.id];
@@ -70,7 +108,15 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
       <div className={`font-heading font-black uppercase tracking-wide ${color}`}>Team {team}</div>
       {roster.filter((r) => r.team === team).map((r) => (
         <div key={r.id} className="grid grid-cols-2 sm:grid-cols-6 gap-2 items-center">
-          <div className="col-span-2 sm:col-span-1 text-sm font-semibold truncate">{playerName(r.id)}</div>
+          <div className="col-span-2 sm:col-span-1 min-w-0">
+            <div className="text-sm font-semibold truncate">{playerName(r.id)}</div>
+            {prefill[r.id]?.ocr_name && (
+              <div className={`text-[10px] font-mono-hud truncate ${prefill[r.id].name_confidence < 0.6 ? "text-amber-400" : "text-slate-500"}`}
+                title="Name read from the screenshot">
+                read as "{prefill[r.id].ocr_name}"{prefill[r.id].champion_source === "icon" ? " · champ from portrait" : ""}
+              </div>
+            )}
+          </div>
           <select value={picks[r.id].champion} onChange={(e) => set(r.id, "champion", e.target.value)}
             className={`${inputCls} col-span-2 sm:col-span-1`} data-testid={`pending-champ-${r.id}`}>
             <option value="">Champion…</option>
@@ -96,6 +142,38 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
         {pm.reported_by && <span>Reported by {pm.reported_by}</span>}
         {pm.confirmed_by && <span>Confirmed by {pm.confirmed_by}</span>}
         {pm.source_ref && <a href={pm.source_ref} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">Discord message</a>}
+      </div>
+      <div className="flex flex-wrap items-start gap-4">
+        {shotUrl ? (
+          <a href={shotUrl} target="_blank" rel="noreferrer" className="block w-full sm:w-80 shrink-0" title="Open full size">
+            <img src={shotUrl} alt="Scoreboard screenshot" className="w-full rounded border border-[#1B2438]" />
+          </a>
+        ) : (
+          <div className="text-xs text-slate-500">No screenshot yet.</div>
+        )}
+        <div className="flex-1 min-w-[12rem] space-y-2">
+          {warnings.length > 0 && (
+            <ul className="space-y-1">
+              {warnings.map((w, i) => (
+                <li key={i} className="flex items-start gap-1.5 text-xs text-amber-400"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />{w}</li>
+              ))}
+            </ul>
+          )}
+          {pm.screenshot && warnings.length === 0 && (
+            <div className="text-xs text-slate-400">Values below were read from the screenshot — compare and fix anything wrong.</div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <label className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase border border-[#1B2438] hover:border-cyan-400 rounded cursor-pointer ${busy ? "opacity-60 pointer-events-none" : ""}`}>
+              <ImageUp className="w-3.5 h-3.5" /> {pm.screenshot ? "Replace screenshot" : "Upload screenshot"}
+              <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => upload(e.target.files?.[0])} />
+            </label>
+            {pm.screenshot && (
+              <button onClick={reparse} disabled={busy} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase border border-[#1B2438] hover:border-cyan-400 rounded disabled:opacity-60">
+                <RefreshCw className="w-3.5 h-3.5" /> Read again
+              </button>
+            )}
+          </div>
+        </div>
       </div>
       <div className="hidden sm:grid grid-cols-6 gap-2 text-[10px] font-mono-hud uppercase tracking-wider text-slate-500">
         <span>Player</span><span>Champion</span>{STAT_FIELDS.map((f) => <span key={f}>{f} avg (optional)</span>)}
@@ -156,7 +234,7 @@ export default function Pending() {
       <div>
         <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Discord Inbox</div>
         <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Pending</h1>
-        <p className="text-sm text-slate-400 mt-2">Matches reported from Discord wait here until an admin adds champions. Stats are optional — enter them from the scoreboard's Average Total tab.</p>
+        <p className="text-sm text-slate-400 mt-2">Matches reported from Discord wait here until an admin checks them. Screenshots are read automatically — check every value before logging. Stats come from the scoreboard's Average Total tab.</p>
       </div>
 
       <section className="space-y-3">
@@ -183,7 +261,7 @@ export default function Pending() {
         ) : pending.length === 0 ? (
           <div className="text-sm text-slate-500">No matches waiting.</div>
         ) : pending.map((pm) => (
-          <PendingMatchCard key={pm.id} pm={pm} playerName={playerName} champions={champions}
+          <PendingMatchCard key={`${pm.id}-${pm.parsed_at || ""}`} pm={pm} playerName={playerName} champions={champions}
             seasonName={seasonName} onDone={load} />
         ))}
       </section>

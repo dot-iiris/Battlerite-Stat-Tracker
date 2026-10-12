@@ -1,6 +1,8 @@
 from dotenv import load_dotenv
 from pathlib import Path
 ROOT_DIR = Path(__file__).parent
+import sys
+sys.path.insert(0, str(ROOT_DIR))  # so scoreboard.py imports wherever uvicorn is started
 load_dotenv(ROOT_DIR / '.env')
 
 import os
@@ -13,7 +15,10 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 from itertools import combinations, permutations
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File
+from fastapi.responses import FileResponse
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
@@ -1484,8 +1489,8 @@ class PendingMatchCreate(BaseModel):
     format: Literal["1v1", "2v2", "3v3"]
     team_a: List[str]               # player ids
     team_b: List[str]
-    team_a_rounds: int = Field(ge=0, le=20)
-    team_b_rounds: int = Field(ge=0, le=20)
+    team_a_rounds: Optional[int] = Field(default=None, ge=0, le=20)  # None = read from screenshot
+    team_b_rounds: Optional[int] = Field(default=None, ge=0, le=20)
     balance_mode: Optional[str] = None
     map: Optional[str] = None
     reported_by: Optional[str] = None
@@ -1518,7 +1523,7 @@ async def create_pending_match(data: PendingMatchCreate, user: dict = Depends(ad
     ids = data.team_a + data.team_b
     if len(set(ids)) != len(ids):
         raise HTTPException(400, "A player can only appear once per match")
-    if data.team_a_rounds == data.team_b_rounds:
+    if data.team_a_rounds is not None and data.team_a_rounds == data.team_b_rounds:
         raise HTTPException(400, "Rounds cannot be tied")
     for pid in ids:
         if not await db.players.find_one({"id": pid}):
@@ -1581,11 +1586,15 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
         players.append(MatchPlayerInput(player_id=p.player_id, champion=p.champion, role=role,
                                         team=team_of[p.player_id], stats=p.stats))
     season_id = data.season_id or pm["season_id"]
+    a_rounds = pm.get("team_a_rounds") if data.team_a_rounds is None else data.team_a_rounds
+    b_rounds = pm.get("team_b_rounds") if data.team_b_rounds is None else data.team_b_rounds
+    if a_rounds is None or b_rounds is None:
+        raise HTTPException(400, "Enter the round score")
     match_in = MatchCreate(
         season_id=season_id,
         format=pm["format"],
-        team_a_rounds=pm["team_a_rounds"] if data.team_a_rounds is None else data.team_a_rounds,
-        team_b_rounds=pm["team_b_rounds"] if data.team_b_rounds is None else data.team_b_rounds,
+        team_a_rounds=a_rounds,
+        team_b_rounds=b_rounds,
         players=players,
         notes=pm.get("notes", "") if data.notes is None else data.notes,
         played_at=pm["played_at"],
@@ -1594,7 +1603,11 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
     await db.matches.update_one({"id": match["id"]}, {"$set": {
         "source": pm.get("source"), "source_ref": pm.get("source_ref"), "map": pm.get("map"),
         "pending_match_id": pmid,
+        "screenshot_file": (pm.get("screenshot") or {}).get("file"),
     }})
+    if pm.get("screenshot") and pm.get("prefill"):
+        confirmed = {p.player_id: p.champion for p in data.players}
+        await _run_ocr(_learn_icons, pm, confirmed)
     # Matches can be completed out of order: replay the season so MMR follows played_at.
     await recompute_season_elo(season_id)
     await db.pending_matches.update_one({"id": pmid}, {"$set": {
@@ -1609,6 +1622,154 @@ async def discard_pending_match(pmid: str, user: dict = Depends(admin_required))
         "status": "discarded", "discarded_at": _now_iso(),
     }})
     return {"ok": True}
+
+
+# --------- Scoreboard screenshots ---------
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or (ROOT_DIR / "uploads"))
+SCREENSHOT_DIR = UPLOAD_DIR / "screenshots"
+ICON_DIR = UPLOAD_DIR / "champion_icons"          # learned from admin-confirmed matches
+ICON_SEED_DIR = ROOT_DIR / "champion_icons_seed"  # shipped starter icons
+MAX_ICONS_PER_CHAMPION = 40
+_ocr_pool = ThreadPoolExecutor(max_workers=1)     # OCR is CPU-heavy: one at a time, off the event loop
+_icon_refs = None
+
+
+async def _run_ocr(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(_ocr_pool, fn, *args)
+
+
+def _icon_refs_cached():
+    global _icon_refs
+    if _icon_refs is None:
+        import scoreboard
+        _icon_refs = scoreboard.load_icon_refs(str(ICON_SEED_DIR), str(ICON_DIR))
+    return _icon_refs
+
+
+def _read_screenshot(path: str, team_a: list, team_b: list) -> dict:
+    try:
+        import scoreboard
+        parsed = scoreboard.parse_scoreboard(path, [c["name"] for c in CHAMPIONS], _icon_refs_cached())
+    except ImportError:
+        return {"parsed": None, "prefill": {"players": {}, "warnings": [
+            "Screenshot reading isn't installed on the server (rapidocr-onnxruntime, opencv-python)"]}}
+    except Exception as e:  # never lose the upload because the reader failed
+        logging.getLogger(__name__).exception("Scoreboard parse failed")
+        return {"parsed": None, "prefill": {"players": {}, "warnings": [f"Couldn't read the screenshot ({e.__class__.__name__})"]}}
+    return {"parsed": parsed, "prefill": scoreboard.assign_to_roster(parsed, team_a, team_b)}
+
+
+def _learn_icons(pm: dict, confirmed: dict):
+    """Save each confirmed champion's portrait from the screenshot as a reference icon."""
+    global _icon_refs
+    try:
+        import cv2
+        import scoreboard
+    except ImportError:
+        return
+    img = cv2.imread(str(SCREENSHOT_DIR / pm["screenshot"]["file"]))
+    if img is None:
+        return
+    for pid, info in (pm.get("prefill") or {}).get("players", {}).items():
+        champ, box = confirmed.get(pid), info.get("icon_box")
+        if not champ or not box:
+            continue
+        d = ICON_DIR / champ
+        d.mkdir(parents=True, exist_ok=True)
+        if len(list(d.glob("*.png"))) >= MAX_ICONS_PER_CHAMPION:
+            continue
+        icon = scoreboard.crop_icon(img, box)
+        if icon is not None:
+            cv2.imwrite(str(d / f"{pm['id']}_{pid}.png"), icon)
+    _icon_refs = None  # reload next time
+
+
+async def _roster(pm: dict):
+    async def side(ids):
+        out = []
+        for pid in ids:
+            p = await db.players.find_one({"id": pid}, {"_id": 0}) or {}
+            out.append({"id": pid, "names": [p.get("name"), p.get("ign")]})
+        return out
+    return await side(pm["team_a"]), await side(pm["team_b"])
+
+
+async def _parse_into_pending(pm: dict) -> dict:
+    team_a, team_b = await _roster(pm)
+    res = await _run_ocr(_read_screenshot, str(SCREENSHOT_DIR / pm["screenshot"]["file"]), team_a, team_b)
+    upd = {"ocr": res["parsed"], "prefill": res["prefill"], "parsed_at": _now_iso()}
+    pre = res["prefill"]
+    # Fill the round score from the orbs if nobody entered one
+    if pm.get("team_a_rounds") is None and pre.get("team_a_rounds") is not None and pre.get("team_b_rounds") is not None \
+            and pre["team_a_rounds"] != pre["team_b_rounds"]:
+        upd["team_a_rounds"], upd["team_b_rounds"] = pre["team_a_rounds"], pre["team_b_rounds"]
+    await db.pending_matches.update_one({"id": pm["id"]}, {"$set": upd})
+    return await db.pending_matches.find_one({"id": pm["id"]}, {"_id": 0})
+
+
+@api_router.post("/pending-matches/{pmid}/screenshot")
+async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), uploaded_by: Optional[str] = None,
+                                    user: dict = Depends(admin_or_bot)):
+    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
+    if not pm:
+        raise HTTPException(404, "Pending match not found")
+    if pm["status"] != "pending":
+        raise HTTPException(409, f"This match was already {pm['status']}")
+    ext = (Path(file.filename or "").suffix or ".png").lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(400, "Upload a PNG, JPG or WEBP screenshot")
+    data = await file.read()
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(400, "Screenshot is too big (max 15 MB)")
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"{pmid}{ext}"
+    (SCREENSHOT_DIR / name).write_bytes(data)
+    pm["screenshot"] = {"file": name, "uploaded_at": _now_iso(),
+                        "uploaded_by": uploaded_by or user.get("name") or user.get("email")}
+    await db.pending_matches.update_one({"id": pmid}, {"$set": {"screenshot": pm["screenshot"]}})
+    return await _parse_into_pending(pm)
+
+
+@api_router.post("/pending-matches/{pmid}/reparse")
+async def reparse_pending_screenshot(pmid: str, user: dict = Depends(admin_required)):
+    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
+    if not pm or not pm.get("screenshot"):
+        raise HTTPException(404, "No screenshot for this match")
+    return await _parse_into_pending(pm)
+
+
+@api_router.get("/pending-matches/{pmid}/screenshot")
+async def get_pending_screenshot(pmid: str):
+    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
+    f = (pm or {}).get("screenshot", {}).get("file")
+    if not f or not (SCREENSHOT_DIR / f).exists():
+        raise HTTPException(404, "No screenshot")
+    return FileResponse(SCREENSHOT_DIR / f)
+
+
+@api_router.get("/matches/{mid}/screenshot")
+async def get_match_screenshot(mid: str):
+    m = await db.matches.find_one({"id": mid}, {"_id": 0})
+    f = (m or {}).get("screenshot_file")
+    if not f or not (SCREENSHOT_DIR / f).exists():
+        raise HTTPException(404, "No screenshot")
+    return FileResponse(SCREENSHOT_DIR / f)
+
+
+class IgnInput(BaseModel):
+    ign: Optional[str] = None
+
+
+@api_router.put("/players/{pid}/ign")
+async def set_player_ign(pid: str, data: IgnInput, user: dict = Depends(admin_or_bot)):
+    """In-game name - used to match screenshot rows to players when it differs from the website name."""
+    if not await db.players.find_one({"id": pid}):
+        raise HTTPException(404, "Player not found")
+    if data.ign and data.ign.strip():
+        await db.players.update_one({"id": pid}, {"$set": {"ign": data.ign.strip()}})
+    else:
+        await db.players.update_one({"id": pid}, {"$unset": {"ign": ""}})
+    return await db.players.find_one({"id": pid}, {"_id": 0, "discord_id": 0})
 
 
 # --------- Scoreboard stat normalisation (derived, never stored) ---------

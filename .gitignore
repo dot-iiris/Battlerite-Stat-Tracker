@@ -90,3 +90,6 @@ frontend/node_modules/.cache/default-development/0.pack
 credentials.json
 *.key
 .credentials
+
+# Uploaded scoreboard screenshots and learned champion icons
+backend/uploads/
