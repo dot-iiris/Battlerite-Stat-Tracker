@@ -2826,7 +2826,7 @@ def _csv_response(rows: list, headers: list, filename: str):
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 @app.get("/api/exports/matches.csv")
-async def export_matches_csv(season_id: Optional[str] = None):
+async def export_matches_csv(season_id: Optional[str] = None, user: dict = Depends(admin_required)):
     q = {}
     if season_id:
         q["season_id"] = season_id
@@ -2848,7 +2848,8 @@ async def export_matches_csv(season_id: Optional[str] = None):
         "matches.csv")
 
 @app.get("/api/exports/leaderboard.csv")
-async def export_leaderboard_csv(season_id: Optional[str] = None, format: Optional[str] = None):
+async def export_leaderboard_csv(season_id: Optional[str] = None, format: Optional[str] = None,
+                                 user: dict = Depends(admin_required)):
     lb = await leaderboard(season_id=season_id, format=format)
     rows = [[r["rank"], r["name"], round(r["mmr"], 2), round(r["peak_mmr"], 2),
              r["wins"], r["losses"], r["winrate"], r["rounds_won"], r["rounds_lost"]] for r in lb]

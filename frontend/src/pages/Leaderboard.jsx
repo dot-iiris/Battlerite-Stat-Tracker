@@ -3,12 +3,14 @@ import { Link } from "react-router-dom";
 import api from "@/api";
 import { Trophy, TrendingUp, Download, Info } from "lucide-react";
 import StreakBadge from "@/components/StreakBadge";
+import { useAuth } from "@/AuthContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { TIERS, tierFor } from "@/lib/tiers";
 
 const tier = tierFor;
 
 export default function Leaderboard() {
+  const { isAdmin } = useAuth();
   const [rows, setRows] = useState([]);
   const [seasons, setSeasons] = useState([]);
   const [seasonId, setSeasonId] = useState("");
@@ -75,11 +77,11 @@ export default function Leaderboard() {
           </h1>
         </div>
         <div className="flex gap-2 items-end">
-          <a href={csvHref}
+          {isAdmin && <a href={csvHref}
             className="btn-glow bg-cyan-400 hover:bg-cyan-300 text-black font-mono-hud font-bold uppercase tracking-wider text-xs px-4 py-2 rounded flex items-center gap-2"
             data-testid="leaderboard-export-csv">
             <Download className="w-3.5 h-3.5" strokeWidth={3} /> CSV
-          </a>
+          </a>}
           <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="leaderboard-season">
             {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
