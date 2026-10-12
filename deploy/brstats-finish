@@ -39,6 +39,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
             f.write(z.read(info))
 PY
 
+OLD_ENV=$(sha256sum "$APP/backend.env" 2>/dev/null | cut -c1-16 || true)
 log "Website settings"
 [ -f "$tmp/backend.env" ] || { echo "backend.env missing from the zip"; exit 1; }
 # this server's own database, whatever the PC used
@@ -48,6 +49,8 @@ db_name=$(grep -E '^\s*DB_NAME\s*=' "$tmp/backend.env" | tail -1 | cut -d= -f2- 
   | tr -d '\r' > "$APP/backend.env"
 chown brstats:brstats "$APP/backend.env"
 chmod 600 "$APP/backend.env"
+RESTART_API=0
+[ "$(sha256sum "$APP/backend.env" | cut -c1-16)" != "$OLD_ENV" ] && RESTART_API=1
 
 if [ -d "$tmp/bot" ]; then
   log "Discord bot"
@@ -63,6 +66,7 @@ fi
 if [ -f "$tmp/db.jsonl.gz" ]; then
   log "Database"
   systemctl stop brstats-bot brstats-api 2>/dev/null || true
+  RESTART_API=1
   args=()
   [ "$REPLACE_DB" = "--replace-db" ] && args+=(--replace)
   if "$APP/venv/bin/python" "$SITE/deploy/db_transfer.py" import "$tmp/db.jsonl.gz" --env "$APP/backend.env" "${args[@]}"; then
@@ -78,8 +82,13 @@ if [ -f "$tmp/db.jsonl.gz" ]; then
 fi
 
 log "Starting the website"
-systemctl enable --now brstats-api
-systemctl restart brstats-api
+if ! systemctl is-active --quiet brstats-api; then
+  systemctl enable --now brstats-api
+elif [ "$RESTART_API" = 1 ]; then
+  systemctl restart brstats-api   # new settings
+else
+  log "Website settings unchanged - left running"
+fi
 for i in $(seq 1 60); do
   curl -fs http://127.0.0.1:9101/api/seasons >/dev/null && break
   sleep 2

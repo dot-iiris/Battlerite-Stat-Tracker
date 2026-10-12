@@ -762,11 +762,13 @@ async def recompute_season_elo(season_id: str):
     matches = await db.matches.find({"season_id": season_id}).sort("played_at", 1).to_list(10000)
     if season and not is_ranked_season(season):
         for m in matches:
-            await db.matches.update_one({"id": m["id"]}, {"$set": {
+            upd = {
                 "players": [{**p, "elo_delta": 0, "placement_bonus": False, "carry_bonus": False}
                             for p in m["players"]],
                 "winner_team": "A" if m["team_a_rounds"] > m["team_b_rounds"] else "B",
-            }})
+            }
+            if any(m.get(k) != v for k, v in upd.items()):
+                await db.matches.update_one({"id": m["id"]}, {"$set": upd})
         return
     player_mmr = {}
     player_match_count = {}  # pid -> matches played in this season before current
@@ -805,12 +807,14 @@ async def recompute_season_elo(season_id: str):
             player_match_count[key] = player_match_count.get(key, 0) + 1
         ta_avg = sum(ta_mmrs.values()) / len(ta_mmrs)
         tb_avg = sum(tb_mmrs.values()) / len(tb_mmrs)
-        await db.matches.update_one({"id": m["id"]}, {"$set": {
+        upd = {
             "players": new_players,
             "team_a_mmr_before": round(ta_avg, 2),
             "team_b_mmr_before": round(tb_avg, 2),
             "winner_team": "A" if m["team_a_rounds"] > m["team_b_rounds"] else "B",
-        }})
+        }
+        if any(m.get(k) != v for k, v in upd.items()):   # most matches don't change - skip those writes
+            await db.matches.update_one({"id": m["id"]}, {"$set": upd})
     schedule_leaderboard_push()
 
 
@@ -827,7 +831,9 @@ async def season_adjustments(season_id: str, player_id: Optional[str] = None, co
 
 async def get_player_mmr(player_id: str, season_id: str) -> float:
     """Compute current MMR for a player in a season based on matches."""
-    matches = await db.matches.find({"season_id": season_id}).sort("played_at", 1).to_list(10000)
+    # only this player's matches, and only the fields needed
+    matches = await db.matches.find({"season_id": season_id, "players.player_id": player_id},
+                                    {"_id": 0, "players.player_id": 1, "players.elo_delta": 1, "players.mmr_track": 1}).to_list(10000)
     mmr = BASE_MMR
     for m in matches:
         for mp in m["players"]:

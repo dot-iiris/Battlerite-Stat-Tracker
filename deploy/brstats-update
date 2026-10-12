@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 # BR Stats - pull the latest code, rebuild and restart.   Usage: sudo brstats-update
 #   --no-pull   rebuild what's already there
+#   --force     redo every step even if nothing changed
+# Only the parts that changed are rebuilt: no backend restart for frontend-only
+# changes, no site rebuild for backend-only changes, no reinstalls if packages didn't change.
 set -euo pipefail
 [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 APP=/opt/brstats
 SITE=$APP/site
+STAMPS=$APP/.stamps
 as_app() { sudo -u brstats -H env HOME="$APP" "$@"; }
 log() { echo "==> $*"; }
+PULL=1; FORCE=0
+for a in "$@"; do
+  case "$a" in --no-pull) PULL=0 ;; --force) FORCE=1 ;; esac
+done
+mkdir -p "$STAMPS"
+# "has this changed since we last did it?" - compares a fingerprint with the saved one
+changed() { [ "$FORCE" = 1 ] || [ "$(cat "$STAMPS/$1" 2>/dev/null)" != "$2" ]; }
+done_with() { echo "$2" > "$STAMPS/$1"; }
 
-if [ "${1:-}" != "--no-pull" ]; then
+if [ "$PULL" = 1 ]; then
   log "Pulling the latest code"
   as_app git -C "$SITE" pull --ff-only
 fi
@@ -17,38 +29,75 @@ fi
 install -m 755 "$SITE/deploy/brstats-update" /usr/local/bin/brstats-update
 install -m 755 "$SITE/deploy/brstats-finish" /usr/local/bin/brstats-finish
 
-log "Backend packages"
-[ -x "$APP/venv/bin/python" ] || as_app python3 -m venv "$APP/venv"
-as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check --upgrade pip
-as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check -r "$SITE/deploy/requirements-server.txt"
+# compress text (pages, scripts, API answers) - much smaller downloads
+if [ ! -f /etc/nginx/conf.d/brstats-gzip.conf ]; then
+  cat > /etc/nginx/conf.d/brstats-gzip.conf <<'NGX'
+gzip_vary on;
+gzip_proxied any;
+gzip_min_length 1024;
+gzip_types text/plain text/css application/json application/javascript text/javascript image/svg+xml;
+NGX
+  if nginx -t 2>/dev/null; then systemctl reload nginx; log "Turned on compression"; else rm -f /etc/nginx/conf.d/brstats-gzip.conf; fi
+fi
 
-log "Building the website"
-as_app tee "$SITE/frontend/.env.production.local" >/dev/null <<'EOF'
+tree() { git -C "$SITE" rev-parse "HEAD:$1" 2>/dev/null || echo none; }
+
+REQ=$(sha256sum "$SITE/deploy/requirements-server.txt" | cut -c1-16)
+if [ ! -x "$APP/venv/bin/python" ] || changed backend-req "$REQ"; then
+  log "Backend packages"
+  [ -x "$APP/venv/bin/python" ] || as_app python3 -m venv "$APP/venv"
+  as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check --upgrade pip
+  as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check -r "$SITE/deploy/requirements-server.txt"
+  done_with backend-req "$REQ"
+fi
+
+FRONT=$(tree frontend)
+if [ ! -f "$SITE/frontend/build/index.html" ] || changed frontend "$FRONT"; then
+  log "Building the website"
+  as_app tee "$SITE/frontend/.env.production.local" >/dev/null <<'EOF2'
 REACT_APP_BACKEND_URL=
 DISABLE_EMERGENT_OVERLAY=true
 ENABLE_HEALTH_CHECK=false
 GENERATE_SOURCEMAP=false
-EOF
-cd "$SITE/frontend"
-as_app npx --yes yarn@1.22.22 install --network-timeout 600000
-# build next to the live site, then swap it in, so the site never goes down mid-build
-rm -rf build.new build.old
-as_app env BUILD_PATH=build.new npx --yes yarn@1.22.22 build
-[ -f build.new/index.html ] || { echo "Build failed - the site was left as it was"; exit 1; }
-[ -d build ] && mv build build.old
-mv build.new build
-rm -rf build.old
+EOF2
+  cd "$SITE/frontend"
+  LOCK=$(sha256sum yarn.lock | cut -c1-16)
+  if [ ! -d node_modules ] || changed frontend-lock "$LOCK"; then
+    as_app npx --yes yarn@1.22.22 install --network-timeout 600000
+    done_with frontend-lock "$LOCK"
+  fi
+  # build next to the live site, then swap it in, so the site never goes down mid-build
+  rm -rf build.new build.old
+  as_app env BUILD_PATH=build.new npx --yes yarn@1.22.22 build
+  [ -f build.new/index.html ] || { echo "Build failed - the site was left as it was"; exit 1; }
+  [ -d build ] && mv build build.old
+  mv build.new build
+  rm -rf build.old
+  done_with frontend "$FRONT"
+else
+  log "Website unchanged - not rebuilding"
+fi
 
 if [ -f "$APP/bot/requirements.txt" ]; then
-  log "Bot packages"
-  [ -x "$APP/bot/.venv/bin/python" ] || as_app python3 -m venv "$APP/bot/.venv"
-  as_app "$APP/bot/.venv/bin/pip" install -q --disable-pip-version-check -r "$APP/bot/requirements.txt"
+  BREQ=$(sha256sum "$APP/bot/requirements.txt" | cut -c1-16)
+  if [ ! -x "$APP/bot/.venv/bin/python" ] || changed bot-req "$BREQ"; then
+    log "Bot packages"
+    [ -x "$APP/bot/.venv/bin/python" ] || as_app python3 -m venv "$APP/bot/.venv"
+    as_app "$APP/bot/.venv/bin/pip" install -q --disable-pip-version-check -r "$APP/bot/requirements.txt"
+    done_with bot-req "$BREQ"
+  fi
 fi
 
-# the website backend picks up the new code; the bot isn't touched (its code and
+# the website backend picks up new code; the bot isn't touched (its code and
 # settings only change through upload-to-oracle / brstats-finish)
+BACK="$(tree backend)$REQ"
 if systemctl is-enabled --quiet brstats-api 2>/dev/null; then
-  systemctl restart brstats-api
-  log "Restarted the website backend (the bot kept running)"
+  if changed backend "$BACK"; then
+    systemctl restart brstats-api
+    log "Restarted the website backend (the bot kept running)"
+  else
+    log "Backend unchanged - not restarted"
+  fi
 fi
+done_with backend "$BACK"
 log "Done"
