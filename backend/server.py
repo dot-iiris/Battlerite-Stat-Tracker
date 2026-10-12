@@ -1430,12 +1430,19 @@ async def set_player_discord(pid: str, data: DiscordLinkInput, user: dict = Depe
 
 @api_router.post("/link-requests")
 async def create_link_request(data: LinkRequestCreate, user: dict = Depends(bot_required)):
-    player = await _find_player_by_name(data.player_name)
-    if not player:
-        raise HTTPException(404, f"No player called '{data.player_name}' on the website")
-    if player.get("discord_id") == data.discord_id:
-        raise HTTPException(409, f"You're already linked to {player['name']}")
-    await _check_link_conflicts(data.discord_id, player)
+    name = " ".join(data.player_name.split())
+    if not 1 <= len(name) <= 30:
+        raise HTTPException(400, "Player names must be 1-30 characters")
+    player = await _find_player_by_name(name)
+    if player:
+        if player.get("discord_id") == data.discord_id:
+            raise HTTPException(409, f"You're already linked to {player['name']}")
+        await _check_link_conflicts(data.discord_id, player)
+    else:
+        # No such player yet: approving this request will create them
+        linked = await db.players.find_one({"discord_id": data.discord_id}, {"_id": 0})
+        if linked:
+            raise HTTPException(409, f"This Discord account is already linked to {linked['name']}")
     # One open request per Discord account: a new request replaces the old one
     await db.link_requests.update_many(
         {"discord_id": data.discord_id, "status": "pending"},
@@ -1445,8 +1452,9 @@ async def create_link_request(data: LinkRequestCreate, user: dict = Depends(bot_
         "id": str(uuid.uuid4()),
         "discord_id": data.discord_id,
         "discord_name": data.discord_name,
-        "player_id": player["id"],
-        "player_name": player["name"],
+        "player_id": player["id"] if player else None,
+        "player_name": player["name"] if player else name,
+        "new_player": player is None,
         "status": "pending",
         "created_at": _now_iso(),
     }
@@ -1470,9 +1478,19 @@ async def decide_link_request(rid: str, data: LinkDecision, user: dict = Depends
         raise HTTPException(409, f"This request was already {req['status']}")
     decided_by = data.decided_by or user.get("name") or user.get("email") or "admin"
     if data.approve:
-        player = await db.players.find_one({"id": req["player_id"]}, {"_id": 0})
-        if not player:
-            raise HTTPException(404, "That player no longer exists")
+        if req.get("player_id"):
+            player = await db.players.find_one({"id": req["player_id"]}, {"_id": 0})
+            if not player:
+                raise HTTPException(404, "That player no longer exists")
+        else:
+            # New-player request: someone may have added the name since - reuse it if so
+            player = await _find_player_by_name(req["player_name"])
+            if not player:
+                player = {"id": str(uuid.uuid4()), "name": req["player_name"],
+                          "created_at": _now_iso(), "created_via": "discord-link"}
+                await db.players.insert_one({**player})
+            req["player_id"] = player["id"]
+            await db.link_requests.update_one({"id": rid}, {"$set": {"player_id": player["id"]}})
         await _check_link_conflicts(req["discord_id"], player)
         await db.players.update_one({"id": player["id"]}, {"$set": {
             "discord_id": req["discord_id"], "discord_name": req["discord_name"],

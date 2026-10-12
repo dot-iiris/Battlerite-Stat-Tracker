@@ -255,6 +255,9 @@ export default function Pending() {
             <span className="font-semibold">{r.discord_name}</span>
             <span className="text-slate-500 text-sm">wants to be</span>
             <span className="font-semibold text-cyan-400">{r.player_name}</span>
+            {r.new_player && (
+              <span className="text-[10px] font-mono-hud uppercase tracking-wider px-1.5 py-0.5 border border-amber-400/50 text-amber-400 rounded" title="No player with this name yet - approving creates them">new player</span>
+            )}
             <span className="text-xs text-slate-500">{new Date(r.created_at).toLocaleString()}</span>
             <div className="flex-1" />
             <button onClick={() => decide(r, false)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase border border-[#1B2438] hover:border-[#FF2E55] hover:text-[#FF2E55] rounded"><XCircle className="w-3.5 h-3.5" /> Deny</button>
