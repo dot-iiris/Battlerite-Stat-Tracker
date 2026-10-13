@@ -41,8 +41,9 @@ BASE_MMR = 1200
 PLACEMENT_MATCHES = 10            # first N matches of the season (per player)
 PLACEMENT_WIN_MULTIPLIER = 2.0    # placement wins earn 2x MMR
 CARRY_WIN_MULTIPLIER = 1.15       # +15% when carrying a sub-average teammate
-# Both bonuses are off for now. Turn one back on with PLACEMENT_BONUS=true / CARRY_BONUS=true in
-# the backend settings; the season is replayed on the next start so every match uses the same rules.
+# Both bonuses are off unless PLACEMENT_BONUS=true / CARRY_BONUS=true is in the backend settings.
+# Each match keeps the rules it was logged under (bonus_rules), so changing these only affects
+# matches logged afterwards - nothing is recalculated.
 _on = lambda name: os.environ.get(name, "false").strip().lower() in ("1", "true", "yes", "on")
 PLACEMENT_BONUS = _on("PLACEMENT_BONUS")
 CARRY_BONUS = _on("CARRY_BONUS")
@@ -216,9 +217,22 @@ def compute_elo_delta(team_a_mmr: float, team_b_mmr: float,
     return K_FACTOR * (actual_a - exp_a) * multiplier
 
 
+def current_bonus_rules() -> dict:
+    return {"placement": PLACEMENT_BONUS, "carry": CARRY_BONUS}
+
+
+def match_bonus_rules(m: dict) -> dict:
+    """The bonus rules a logged match is scored under. Matches from before rules were stored
+    were scored with both bonuses (old-site imports with none)."""
+    if m.get("bonus_rules") is not None:
+        return m["bonus_rules"]
+    return {"placement": True, "carry": True}
+
+
 def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
                           team_a_rounds: int, team_b_rounds: int,
-                          placement_counts: dict = None, bonuses: bool = True) -> dict:
+                          placement_counts: dict = None, bonuses: bool = True,
+                          rules: Optional[dict] = None) -> dict:
     """Compute per-player ELO deltas.
 
     Within the winning team the weaker player gains a larger share (bigger upset for them),
@@ -233,6 +247,8 @@ def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
 
     bonuses=False skips both (matches imported from the old site, which were scored
     before these bonuses existed, keep their original MMR changes).
+    rules: {"placement": bool, "carry": bool} - which bonuses this match was logged under
+    (default: the current settings). Placement still counts every match of the season.
 
     Returns {player_id: {"delta": float, "placement_bonus": bool, "carry_bonus": bool}}.
     """
@@ -244,6 +260,8 @@ def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
                 for pid in list(team_a_mmrs) + list(team_b_mmrs)}
 
     placement_counts = placement_counts or {}
+    rules = rules if rules is not None else current_bonus_rules()
+    use_placement, use_carry = bool(rules.get("placement")), bool(rules.get("carry"))
 
     avg_a = sum(team_a_mmrs.values()) / len(team_a_mmrs)
     avg_b = sum(team_b_mmrs.values()) / len(team_b_mmrs)
@@ -273,10 +291,10 @@ def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
             placement_bonus = False
             carry_bonus = False
             if won and delta > 0 and bonuses:
-                if PLACEMENT_BONUS and placement_counts.get(pid, 0) < PLACEMENT_MATCHES:
+                if use_placement and placement_counts.get(pid, 0) < PLACEMENT_MATCHES:
                     delta *= PLACEMENT_WIN_MULTIPLIER
                     placement_bonus = True
-                if CARRY_BONUS and has_weak_mate and team_mmrs[pid] > opp_avg:
+                if use_carry and has_weak_mate and team_mmrs[pid] > opp_avg:
                     other_mmrs = [m for pid2, m in team_mmrs.items() if pid2 != pid]
                     if any(m < opp_avg for m in other_mmrs):
                         delta *= CARRY_WIN_MULTIPLIER
@@ -308,7 +326,6 @@ async def startup():
     await db.screenshots.create_index("sha256")
     _spawn(prune_screenshots())
     _spawn(_backfill_mmr_before())
-    _spawn(_replay_if_rules_changed())
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -758,17 +775,6 @@ def counts_for_mmr(mp: dict) -> bool:
     return not mp.get("mmr_track")
 
 
-async def _replay_if_rules_changed():
-    """The MMR bonus settings changed since the last start: replay every season with the new rules."""
-    rules = {"placement": PLACEMENT_BONUS, "carry": CARRY_BONUS}
-    saved = await db.settings.find_one({"id": "mmr_rules"}, {"_id": 0})
-    if saved and saved.get("rules") == rules:
-        return
-    for sid in await db.matches.distinct("season_id"):
-        await recompute_season_elo(sid)
-    await db.settings.update_one({"id": "mmr_rules"}, {"$set": {"rules": rules}}, upsert=True)
-
-
 async def _backfill_mmr_before():
     """Matches logged before each player's MMR-before was stored: replay their seasons once."""
     sids = await db.matches.distinct("season_id", {"players": {"$elemMatch": {"mmr_before": {"$exists": False}}}})
@@ -811,7 +817,8 @@ async def recompute_season_elo(season_id: str):
         deltas = compute_player_deltas(ta_mmrs, tb_mmrs,
                                        m["team_a_rounds"], m["team_b_rounds"],
                                        placement_counts=placement_counts,
-                                       bonuses=not m.get("legacy_scoring"))
+                                       bonuses=not m.get("legacy_scoring"),
+                                       rules=match_bonus_rules(m))
         new_players = []
         for p in m["players"]:
             key = rating_key(p)
@@ -923,8 +930,9 @@ async def _insert_match(data: MatchCreate) -> dict:
             "season_id": data.season_id,
             "players": {"$elemMatch": {"player_id": pid, "mmr_track": {"$exists": False}}},
         })
+    rules = current_bonus_rules()
     deltas = compute_player_deltas(ta_mmrs, tb_mmrs, data.team_a_rounds, data.team_b_rounds,
-                                   placement_counts=placement_counts)
+                                   placement_counts=placement_counts, rules=rules)
     if not is_ranked_season(season):
         deltas = {}  # unranked: logged for history/stats only, never moves MMR
 
@@ -955,6 +963,7 @@ async def _insert_match(data: MatchCreate) -> dict:
         "played_at": data.played_at or datetime.now(timezone.utc).isoformat(),
         "team_a_mmr_before": round(team_a_mmr, 2),
         "team_b_mmr_before": round(team_b_mmr, 2),
+        "bonus_rules": rules,   # this match keeps these even if the settings change later
     }
     await db.matches.insert_one(doc)
     doc.pop("_id", None)
