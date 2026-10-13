@@ -6,7 +6,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import ChampionPortrait from "@/components/ChampionPortrait";
 import StreakBadge from "@/components/StreakBadge";
 import { tierFor } from "@/lib/tiers";
-import SeasonSelect from "@/components/SeasonSelect";
+import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -14,7 +14,7 @@ export default function PlayerProfile() {
   const { id } = useParams();
   const [stats, setStats] = useState(null);
   const [seasons, setSeasons] = useState([]);
-  const [seasonId, setSeasonId] = useState("");
+  const [seasonId, setSeasonId] = useState(savedSeason);   // the visitor's last pick, else All
 
   useEffect(() => {
     (async () => {

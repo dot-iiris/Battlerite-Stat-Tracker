@@ -4,13 +4,13 @@ import ChampionPortrait from "@/components/ChampionPortrait";
 import { Trophy, Flame, Zap, Printer, TrendingUp, TrendingDown, Info, Swords } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import SeasonSelect from "@/components/SeasonSelect";
+import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
 
 export default function Recap() {
   const [data, setData] = useState(null);
   const [days, setDays] = useState(7);
   const [seasons, setSeasons] = useState([]);
-  const [seasonId, setSeasonId] = useState("");
+  const [seasonId, setSeasonId] = useState(savedSeason);   // the visitor's last pick, else All
 
   useEffect(() => {
     api.get("/seasons").then((r) => setSeasons(r.data));

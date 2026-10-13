@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import api from "@/api";
 import { Grid3x3 } from "lucide-react";
-import SeasonSelect from "@/components/SeasonSelect";
+import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
 
 export default function Matrix() {
   const [data, setData] = useState(null);
   const [seasons, setSeasons] = useState([]);
-  const [seasonId, setSeasonId] = useState("");
+  const [seasonId, setSeasonId] = useState(savedSeason);   // the visitor's last pick, else All
   const [rowHl, setRowHl] = useState(null);
   const [colHl, setColHl] = useState(null);
 

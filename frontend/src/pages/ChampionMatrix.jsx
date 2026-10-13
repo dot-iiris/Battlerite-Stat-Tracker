@@ -3,14 +3,14 @@ import { Link } from "react-router-dom";
 import api from "@/api";
 import { Grid3x3, Flame } from "lucide-react";
 import ChampionPortrait from "@/components/ChampionPortrait";
-import SeasonSelect from "@/components/SeasonSelect";
+import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
 export default function ChampionMatrix() {
   const [data, setData] = useState(null);
   const [seasons, setSeasons] = useState([]);
-  const [seasonId, setSeasonId] = useState("");
+  const [seasonId, setSeasonId] = useState(savedSeason);   // the visitor's last pick, else All
   const [minMatches, setMinMatches] = useState(1);
   const [rowHl, setRowHl] = useState(null);
   const [colHl, setColHl] = useState(null);

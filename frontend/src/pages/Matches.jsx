@@ -8,7 +8,7 @@ import EditMatchDialog from "@/components/EditMatchDialog";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import MmrChange from "@/components/MmrChange";
 import MatchDetails from "@/components/MatchDetails";
-import SeasonSelect from "@/components/SeasonSelect";
+import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -69,7 +69,8 @@ export default function Matches() {
       const [s, p] = await Promise.all([api.get("/seasons"), api.get("/players")]);
       setSeasons(s.data);
       setPlayers(p.data);
-      setSeasonFilter((cur) => cur ?? "");   // start on All seasons
+      // the visitor's last pick (else All) - unless a link opened a match, which could be in any season
+      setSeasonFilter((cur) => cur ?? (openId ? "" : savedSeason()));
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

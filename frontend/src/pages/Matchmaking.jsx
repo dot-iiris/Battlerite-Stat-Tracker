@@ -87,7 +87,7 @@ export default function Matchmaking() {
         </div>
         <div>
           <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Season (for MMR)</label>
-          <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId} withAll={false}
+          <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId} withAll={false} remember={null}
             className="w-full bg-[#121828] border border-[#1B2438] rounded px-3 py-2.5 text-sm" data-testid="mm-season" />
         </div>
       </div>
