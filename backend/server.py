@@ -302,6 +302,7 @@ async def startup():
     await db.ocr_feedback.create_index("created_at")
     await db.screenshots.create_index("sha256")
     _spawn(prune_screenshots())
+    _spawn(_backfill_mmr_before())
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -751,6 +752,13 @@ def counts_for_mmr(mp: dict) -> bool:
     return not mp.get("mmr_track")
 
 
+async def _backfill_mmr_before():
+    """Matches logged before each player's MMR-before was stored: replay their seasons once."""
+    sids = await db.matches.distinct("season_id", {"players": {"$elemMatch": {"mmr_before": {"$exists": False}}}})
+    for sid in sids:
+        await recompute_season_elo(sid)
+
+
 async def recompute_season_elo(season_id: str):
     """Recompute elo_delta for every match in a season in chronological order."""
     season = await db.seasons.find_one({"id": season_id})
@@ -758,7 +766,7 @@ async def recompute_season_elo(season_id: str):
     if season and not is_ranked_season(season):
         for m in matches:
             upd = {
-                "players": [{**p, "elo_delta": 0, "placement_bonus": False, "carry_bonus": False}
+                "players": [{**p, "elo_delta": 0, "placement_bonus": False, "carry_bonus": False, "mmr_before": None}
                             for p in m["players"]],
                 "winner_team": "A" if m["team_a_rounds"] > m["team_b_rounds"] else "B",
             }
@@ -794,6 +802,7 @@ async def recompute_season_elo(season_id: str):
             d = info["delta"]
             new_players.append({
                 **p,
+                "mmr_before": round(player_mmr.get(key, BASE_MMR), 2),   # after = mmr_before + elo_delta
                 "elo_delta": round(d, 2),
                 "placement_bonus": info["placement_bonus"],
                 "carry_bonus": info["carry_bonus"],
@@ -911,6 +920,7 @@ async def _insert_match(data: MatchCreate) -> dict:
             "role": p.role,
             "team": p.team,
             "elo_delta": round(info["delta"], 2),
+            "mmr_before": round({**ta_mmrs, **tb_mmrs}[p.player_id], 2) if is_ranked_season(season) else None,
             "placement_bonus": info["placement_bonus"],
             "carry_bonus": info["carry_bonus"],
             "stats": p.stats.model_dump() if p.stats else None,

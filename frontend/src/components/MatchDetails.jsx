@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { API } from "@/api";
 import { Image as ImageIcon } from "lucide-react";
+import MmrChange from "@/components/MmrChange";
 import ChampionPortrait from "@/components/ChampionPortrait";
 
 const STATS = [
@@ -54,9 +55,7 @@ export default function MatchDetails({ match, playerName, seasonName }) {
           </td>
         ))}
         <td className="py-2 pl-2 text-right font-mono-hud text-sm text-cyan-400">{fmt(d.damage_normalised, 1)}</td>
-        <td className={`py-2 pl-2 text-right font-mono-hud text-xs ${p.elo_delta >= 0 ? "text-[#00E676]" : "text-[#FF2E55]"}`}>
-          {p.elo_delta >= 0 ? "+" : ""}{p.elo_delta}
-        </td>
+        <td className="py-2 pl-2 text-right"><MmrChange p={p} size="text-xs" /></td>
       </tr>
     );
   });
@@ -76,9 +75,7 @@ export default function MatchDetails({ match, playerName, seasonName }) {
               <Link to={`/players/${p.player_id}`} className="block text-sm font-medium hover:text-cyan-400 truncate">{playerName(p.player_id)}</Link>
               <div className="text-[10px] font-mono-hud text-slate-500 truncate">{p.champion}</div>
             </div>
-            <span className={`font-mono-hud text-xs ${p.elo_delta >= 0 ? "text-[#00E676]" : "text-[#FF2E55]"}`}>
-              {p.elo_delta >= 0 ? "+" : ""}{p.elo_delta}
-            </span>
+            <MmrChange p={p} size="text-xs" />
           </div>
         ))}
       </div>

@@ -6,6 +6,7 @@ import { Trash2, Filter, Pencil, Search, Download, ChevronDown, Send } from "luc
 import { useAuth } from "@/AuthContext";
 import EditMatchDialog from "@/components/EditMatchDialog";
 import ChampionPortrait from "@/components/ChampionPortrait";
+import MmrChange from "@/components/MmrChange";
 import MatchDetails from "@/components/MatchDetails";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
@@ -175,8 +176,8 @@ export default function Matches() {
                           <Link to={`/players/${p.player_id}`} className="text-sm font-medium hover:text-cyan-400 truncate">{playerName(p.player_id)}</Link>
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className="text-xs font-mono-hud text-slate-400 hidden sm:inline">{p.champion}</span>
-                          <span className={`text-[10px] font-mono-hud ${p.elo_delta >= 0 ? "text-[#00E676]" : "text-[#FF2E55]"}`}>{p.elo_delta >= 0 ? "+" : ""}{p.elo_delta}</span>
+                          <span className="text-xs font-mono-hud text-slate-400 hidden lg:inline">{p.champion}</span>
+                          <MmrChange p={p} />
                         </div>
                       </div>
                     ))}
@@ -196,8 +197,8 @@ export default function Matches() {
                           <Link to={`/players/${p.player_id}`} className="text-sm font-medium hover:text-cyan-400 truncate">{playerName(p.player_id)}</Link>
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className="text-xs font-mono-hud text-slate-400 hidden sm:inline">{p.champion}</span>
-                          <span className={`text-[10px] font-mono-hud ${p.elo_delta >= 0 ? "text-[#00E676]" : "text-[#FF2E55]"}`}>{p.elo_delta >= 0 ? "+" : ""}{p.elo_delta}</span>
+                          <span className="text-xs font-mono-hud text-slate-400 hidden lg:inline">{p.champion}</span>
+                          <MmrChange p={p} />
                         </div>
                       </div>
                     ))}
