@@ -30,7 +30,11 @@ def _get_ocr():
     if _ocr is None:
         from rapidocr import RapidOCR  # optional dependency, loaded on first use
         # no upside-down check: scoreboards are never upside down, and the check flipped "99" into "66"
-        _ocr = RapidOCR(params={"Global.log_level": "error", "Global.use_cls": False})
+        # one CPU core at most (OCR_THREADS to change it), so a screenshot never takes over the server
+        threads = int(os.environ.get("OCR_THREADS") or 1)
+        _ocr = RapidOCR(params={"Global.log_level": "error", "Global.use_cls": False,
+                                "EngineConfig.onnxruntime.intra_op_num_threads": threads,
+                                "EngineConfig.onnxruntime.inter_op_num_threads": 1})
     return _ocr
 
 
@@ -364,11 +368,30 @@ def parse_scoreboard(image, champion_names: List[str], icon_refs: Optional[Dict[
     if img is None:
         return {"ok": False, "warnings": ["Couldn't open the image"]}
     h, w = img.shape[:2]
-    factors = sorted({round(max(1.0, t / h), 2) for t in (h, 1800.0, 2600.0)})
-    passes = [_parse_pass(img, _tokens(img, f), champion_names) for f in factors]
-    if not any(p["your_team"] and p["enemy_team"] for p in passes):
+
+    def zoom(whole: bool) -> float:
+        # the text reader works on at most 2000 px (it shrinks anything bigger), so zooming the
+        # region past that only costs time
+        long_side = max(w, h) if whole else max(w * 0.64, h * 0.76)
+        return round(min(3.0, max(1.0, 2000.0 / long_side)), 2)
+
+    def complete(ps: dict) -> bool:
+        rows = ps["your_team"] + ps["enemy_team"]
+        return bool(ps["your_team"] and ps["enemy_team"]) and \
+            all(r.get("name") and None not in r["stats"].values() for r in rows)
+
+    # a full-screen screenshot is widescreen; a squarer image was cropped around the scoreboard
+    whole = w / h < 1.5
+    passes = [] if whole else [_parse_pass(img, _tokens(img, zoom(False)), champion_names)]
+    if whole or not (passes[0]["your_team"] and passes[0]["enemy_team"]):
         # not in the middle of the image: probably cropped close around the scoreboard - read all of it
-        passes += [_parse_pass(img, _tokens(img, f, whole=True), champion_names) for f in factors]
+        whole = True
+        passes.append(_parse_pass(img, _tokens(img, zoom(True), whole=True), champion_names))
+    if not complete(passes[-1]):
+        # something's missing: one more look at a different zoom (champions are handled below)
+        z = zoom(whole)
+        alt = 1.0 if z >= 1.4 else round(min(3.0, z * 1.5), 2)
+        passes.append(_parse_pass(img, _tokens(img, alt, whole=whole), champion_names))
 
     result = {"average_tab": any(p["average_tab"] for p in passes)}
     for side in ("your_team", "enemy_team"):

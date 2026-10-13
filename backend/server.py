@@ -7,6 +7,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 import os
 import hashlib
+import threading
 import hmac
 import logging
 import uuid
@@ -2268,7 +2269,15 @@ async def discard_pending_match(pmid: str, user: dict = Depends(admin_required))
 ICON_SEED_DIR = ROOT_DIR / "champion_icons_seed"  # shipped starter icons (read-only)
 MAX_ICONS_PER_CHAMPION = 40
 MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024           # MongoDB documents max out at 16 MB
-_ocr_pool = ThreadPoolExecutor(max_workers=1)     # OCR is CPU-heavy: one at a time, off the event loop
+def _lowest_priority():
+    """Screenshot reading only gets CPU the website, database and bot aren't using."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)   # this thread only (Linux)
+    except (AttributeError, OSError):
+        pass
+
+
+_ocr_pool = ThreadPoolExecutor(max_workers=1, initializer=_lowest_priority)   # one at a time, off the event loop
 _icon_refs = None
 
 
