@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # BR Stats - install your settings, bot and data, then start everything.
 # Usage: sudo brstats-finish /tmp/brstats-upload.zip [--replace-db]
-# The zip is made by upload-to-oracle.bat on your PC and contains:
+# The zip is made by deploy-bot-and-settings.bat on your PC and contains:
 #   backend.env        the website's live settings (secrets)
 #   bot/               the Discord bot, with its .env
 #   db.jsonl.gz        a copy of your database (optional)

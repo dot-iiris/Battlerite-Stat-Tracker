@@ -27,4 +27,4 @@ yarn-error.log*
 
 # Local tools that hold server details
 admin-tunnel.bat
-upload-to-oracle.ps1
+deploy-bot-and-settings.ps1

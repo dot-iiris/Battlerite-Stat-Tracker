@@ -74,7 +74,7 @@ if [ ! -x "$APP/venv/bin/python" ] || changed backend-req "$REQ"; then
 fi
 
 FRONT=$(tree frontend)
-PREBUILT=/tmp/brstats-web-$FRONT.tgz   # built on your PC by update-oracle.bat
+PREBUILT=/tmp/brstats-web-$FRONT.tgz   # built on your PC by deploy-website.bat
 if [ -f "$PREBUILT" ] && { [ ! -f "$SITE/frontend/build/index.html" ] || changed frontend "$FRONT"; }; then
   log "Installing the website build from your PC"
   rm -rf "$SITE/frontend/build.new"; mkdir -p "$SITE/frontend/build.new"
@@ -120,7 +120,7 @@ if [ -f "$APP/bot/requirements.txt" ]; then
 fi
 
 # the website backend picks up new code; the bot isn't touched (its code and
-# settings only change through upload-to-oracle / brstats-finish)
+# settings only change through deploy-bot-and-settings / brstats-finish)
 BACK="$(tree backend)$REQ"
 if systemctl is-enabled --quiet brstats-api 2>/dev/null; then
   if changed backend "$BACK"; then
