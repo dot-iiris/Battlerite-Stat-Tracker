@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import api, { API } from "@/api";
 import { toast } from "sonner";
-import { X, Save, AlertTriangle, Image as ImageIcon } from "lucide-react";
+import { X, Save, AlertTriangle, Image as ImageIcon, ImagePlus } from "lucide-react";
 import { invalidateChampionStats } from "@/lib/championStats";
 
 const STAT_FIELDS = ["score", "damage", "protection", "disables"];
@@ -39,8 +39,11 @@ function readSlots(match, screenshot) {
   return [a.map(slot), b.map(slot)];
 }
 
-export default function EditMatchDialog({ match, screenshot = null, onClose, onSaved }) {
-  const [initA, initB] = readSlots(match, screenshot);
+export default function EditMatchDialog({ match, screenshot: readAtOpen = null, onClose, onSaved }) {
+  const [initA, initB] = readSlots(match, readAtOpen);
+  const [screenshot, setScreenshot] = useState(readAtOpen);   // a new screenshot read for this match
+  const [reading, setReading] = useState(false);
+  const fileRef = useRef(null);
   const [seasons, setSeasons] = useState([]);
   const [players, setPlayers] = useState([]);
   const [champions, setChampions] = useState([]);
@@ -58,6 +61,41 @@ export default function EditMatchDialog({ match, screenshot = null, onClose, onS
     if (screenshot && !saved.current) api.delete(`/screenshots/${screenshot.screenshot_id}`).catch(() => {});
     onClose();
   };
+
+  // Read a (new) scoreboard for this match: fills champions and stats for the players in the form
+  const readShot = async (file) => {
+    if (!file) return;
+    if ([...teamA, ...teamB].some((s) => !s.player_id)) { toast.error("Pick every player first"); return; }
+    const form = new FormData();
+    form.append("file", file);
+    form.append("team_a", teamA.map((s) => s.player_id).join(","));
+    form.append("team_b", teamB.map((s) => s.player_id).join(","));
+    form.append("match_id", match.id);
+    setReading(true);
+    try {
+      const { data } = await api.post("/screenshots/read", form);
+      if (screenshot) api.delete(`/screenshots/${screenshot.screenshot_id}`).catch(() => {});
+      const fill = (slot) => {
+        const r = data.players[slot.player_id] || {};
+        const out = { ...slot, champion: r.champion || slot.champion };
+        for (const f of STAT_FIELDS) if (r.stats?.[f] != null) out[f] = String(r.stats[f]);
+        return out;
+      };
+      const all = [...teamA, ...teamB].map(fill);
+      const teamOf = (s, i) => data.teams?.[s.player_id] || (i < teamA.length ? "A" : "B");
+      const a = all.filter((s, i) => teamOf(s, i) === "A");
+      const b = all.filter((s, i) => teamOf(s, i) === "B");
+      if (a.length === b.length) { setTeamA(a); setTeamB(b); } else { setTeamA(all.slice(0, teamA.length)); setTeamB(all.slice(teamA.length)); }
+      setScreenshot(data);
+      toast.success("Filled in from the screenshot - check it before saving");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't read that screenshot");
+    } finally {
+      setReading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+  const currentShot = !screenshot && match.screenshot_id ? `${API}/matches/${match.id}/screenshot?v=${match.screenshot_id}` : null;
 
   useEffect(() => {
     (async () => {
@@ -157,6 +195,25 @@ export default function EditMatchDialog({ match, screenshot = null, onClose, onS
       <div className="hud-card hud-corner w-full max-w-3xl my-8 p-6 relative" onClick={(e) => e.stopPropagation()}>
         <button onClick={close} className="absolute top-3 right-3 text-slate-500 hover:text-white p-1" data-testid="edit-close"><X className="w-5 h-5" /></button>
         <h2 className="font-heading text-2xl font-black uppercase tracking-tight mb-4">{screenshot ? "Add Screenshot" : "Edit Match"}</h2>
+        <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
+          onChange={(e) => readShot(e.target.files?.[0])} data-testid="edit-shot-input" />
+        {!screenshot && (
+          <div className="mb-4 flex flex-wrap gap-3 items-start text-xs text-slate-400 border border-[#1B2438] rounded p-3">
+            {currentShot && (
+              <a href={currentShot} target="_blank" rel="noreferrer" className="block w-40 shrink-0" title="Open full size">
+                <img src={currentShot} alt="Scoreboard" className="w-full rounded border border-[#1B2438]" />
+              </a>
+            )}
+            <div className="space-y-2 min-w-0 flex-1">
+              <div>{currentShot ? "This match's scoreboard screenshot." : "No screenshot for this match yet."}</div>
+              <button type="button" disabled={reading} onClick={() => fileRef.current?.click()}
+                className="px-3 py-1.5 border border-[#1B2438] hover:border-cyan-400/60 rounded font-mono-hud uppercase tracking-wider text-slate-200 flex items-center gap-2 disabled:opacity-50"
+                data-testid="edit-read-shot">
+                <ImagePlus className="w-3.5 h-3.5" /> {reading ? "Reading…" : currentShot ? "Replace from screenshot" : "Fill from screenshot"}
+              </button>
+            </div>
+          </div>
+        )}
         {screenshot && (
           <div className="mb-4 flex flex-wrap gap-3 items-start text-xs text-slate-300 border border-cyan-400/30 bg-cyan-400/5 rounded p-3">
             <a href={`${API}/screenshots/${screenshot.screenshot_id}`} target="_blank" rel="noreferrer" className="block w-40 shrink-0" title="Open full size">

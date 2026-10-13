@@ -16,8 +16,8 @@ export default function LogMatch() {
   const [champions, setChampions] = useState([]);
   const [format, setFormat] = useState("2v2");
   const [seasonId, setSeasonId] = useState("");
-  const [teamARounds, setTeamARounds] = useState(5);
-  const [teamBRounds, setTeamBRounds] = useState(3);
+  const [teamARounds, setTeamARounds] = useState(3);
+  const [teamBRounds, setTeamBRounds] = useState(2);
   const [teamA, setTeamA] = useState([emptySlot(), emptySlot()]);
   const [teamB, setTeamB] = useState([emptySlot(), emptySlot()]);
   const [notes, setNotes] = useState("");
@@ -145,7 +145,7 @@ export default function LogMatch() {
       setShot(null);   // attached now
       // Reset
       applyFormat(format);
-      setTeamARounds(5); setTeamBRounds(3); setNotes("");
+      setTeamARounds(3); setTeamBRounds(2); setNotes("");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed to log match");
     } finally {
