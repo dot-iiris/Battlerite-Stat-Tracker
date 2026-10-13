@@ -5,5 +5,5 @@
 set -e
 export DOMAIN=br.iarhm.xyz
 apt-get update && apt-get install -y git
-git clone --branch bot-integration https://github.com/dot-iiris/Battlerite-Stat-Tracker.git /opt/brstats/site
+git clone --branch main https://github.com/dot-iiris/Battlerite-Stat-Tracker.git /opt/brstats/site
 bash /opt/brstats/site/deploy/oracle-setup.sh

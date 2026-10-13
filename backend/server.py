@@ -136,27 +136,6 @@ async def admin_required(request: Request) -> dict:
     return user
 
 
-# --------- Discord bot auth ---------
-# The bot authenticates with a shared secret sent in the X-Bot-Key header.
-# Set BOT_API_KEY in backend/.env (and the same value in the bot's .env).
-BOT_USER = {"id": "discord-bot", "name": "Discord Bot", "role": "bot"}
-
-def _bot_key_ok(request: Request) -> bool:
-    expected = os.environ.get("BOT_API_KEY", "")
-    given = request.headers.get("X-Bot-Key", "")
-    return bool(expected) and hmac.compare_digest(given.encode(), expected.encode())
-
-async def bot_required(request: Request) -> dict:
-    if not _bot_key_ok(request):
-        raise HTTPException(status_code=401, detail="Valid bot key required")
-    return BOT_USER
-
-async def admin_or_bot(request: Request) -> dict:
-    if _bot_key_ok(request):
-        return BOT_USER
-    return await admin_required(request)
-
-
 # --------- Models ---------
 class LoginInput(BaseModel):
     email: EmailStr
@@ -455,7 +434,6 @@ async def save_season_pick(data: SeasonPick, user: dict = Depends(get_current_us
     """Remember a logged-in player's last season pick on their account (it follows them across devices)."""
     await db.users.update_one({"id": user["id"]}, {"$set": {f"prefs.seasons.{data.name}": data.value}})
     return {"ok": True}
-
 
 
 # --------- Log in with Discord ---------
@@ -784,7 +762,7 @@ class ReserveCode(BaseModel):
 
 
 @api_router.post("/matches/reserve-code")
-async def reserve_match_code(data: ReserveCode, user: dict = Depends(admin_or_bot)):
+async def reserve_match_code(data: ReserveCode, user: dict = Depends(admin_required)):
     """The bot takes a code when a lobby fills, so the players can see it straight away."""
     season = await get_active_ranked_season() if data.ranked else await ensure_unranked_season()
     if not season:
@@ -1893,7 +1871,7 @@ async def matchmaking(data: MatchmakingRequest):
 
 
 # =====================================================================
-# Discord bot integration: account linking + pending matches
+# Discord account linking
 # =====================================================================
 CHAMPION_ROLES = {c["name"]: c["role"] for c in CHAMPIONS}
 
@@ -1908,10 +1886,6 @@ async def _find_player_by_name(name: str) -> Optional[dict]:
 
 
 # --------- Discord account links ---------
-class LinkRequestCreate(BaseModel):
-    discord_id: str
-    discord_name: str
-    player_name: str
 
 class LinkDecision(BaseModel):
     approve: bool
@@ -1931,23 +1905,8 @@ async def _check_link_conflicts(discord_id: str, player: dict):
         raise HTTPException(409, f"This Discord account is already linked to {other['name']}")
 
 
-@api_router.get("/players/linked-discord")
-async def linked_discord_accounts(user: dict = Depends(admin_or_bot)):
-    """Discord ids of every linked player (for the bot's linked-player role)."""
-    docs = await db.players.find({"discord_id": {"$nin": [None, ""]}}, {"_id": 0, "id": 1, "name": 1, "discord_id": 1}).to_list(10000)
-    return [{"player_id": d["id"], "name": d["name"], "discord_id": str(d["discord_id"])} for d in docs]
-
-
-@api_router.get("/players/by-discord/{discord_id}")
-async def player_by_discord(discord_id: str, user: dict = Depends(admin_or_bot)):
-    p = await db.players.find_one({"discord_id": discord_id}, {"_id": 0})
-    if not p:
-        raise HTTPException(404, "No player linked to this Discord account")
-    return p
-
-
 @api_router.put("/players/{pid}/discord")
-async def set_player_discord(pid: str, data: DiscordLinkInput, user: dict = Depends(admin_or_bot)):
+async def set_player_discord(pid: str, data: DiscordLinkInput, user: dict = Depends(admin_required)):
     player = await db.players.find_one({"id": pid}, {"_id": 0})
     if not player:
         raise HTTPException(404, "Player not found")
@@ -2000,7 +1959,6 @@ async def update_player(pid: str, data: PlayerUpdate, user: dict = Depends(admin
     if upd or unset:
         await db.players.update_one({"id": pid}, {k: v for k, v in (("$set", upd), ("$unset", unset)) if v})
     return await db.players.find_one({"id": pid}, {"_id": 0})
-
 
 
 # --------- Merge players ---------
@@ -2187,49 +2145,14 @@ async def admin_discord_accounts(user: dict = Depends(admin_required)):
     return sorted(seen.values(), key=lambda a: (a.get("discord_name") or "").lower())
 
 
-@api_router.post("/link-requests")
-async def create_link_request(data: LinkRequestCreate, user: dict = Depends(bot_required)):
-    name = " ".join(data.player_name.split())
-    if not 1 <= len(name) <= 30:
-        raise HTTPException(400, "Player names must be 1-30 characters")
-    player = await _find_player_by_name(name)
-    if player:
-        if player.get("discord_id") == data.discord_id:
-            raise HTTPException(409, f"You're already linked to {player['name']}")
-        await _check_link_conflicts(data.discord_id, player)
-    else:
-        # No such player yet: approving this request will create them
-        linked = await db.players.find_one({"discord_id": data.discord_id}, {"_id": 0})
-        if linked:
-            raise HTTPException(409, f"This Discord account is already linked to {linked['name']}")
-    # One open request per Discord account: a new request replaces the old one
-    await db.link_requests.update_many(
-        {"discord_id": data.discord_id, "status": "pending"},
-        {"$set": {"status": "superseded", "decided_at": _now_iso()}},
-    )
-    doc = {
-        "id": str(uuid.uuid4()),
-        "discord_id": data.discord_id,
-        "discord_name": data.discord_name,
-        "player_id": player["id"] if player else None,
-        "player_name": player["name"] if player else name,
-        "new_player": player is None,
-        "status": "pending",
-        "created_at": _now_iso(),
-    }
-    await db.link_requests.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
-
-
 @api_router.get("/link-requests")
-async def list_link_requests(status: Optional[str] = "pending", user: dict = Depends(admin_or_bot)):
+async def list_link_requests(status: Optional[str] = "pending", user: dict = Depends(admin_required)):
     q = {"status": status} if status else {}
     return await db.link_requests.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
 @api_router.post("/link-requests/{rid}/decision")
-async def decide_link_request(rid: str, data: LinkDecision, user: dict = Depends(admin_or_bot)):
+async def decide_link_request(rid: str, data: LinkDecision, user: dict = Depends(admin_required)):
     req = await db.link_requests.find_one({"id": rid}, {"_id": 0})
     if not req:
         raise HTTPException(404, "Link request not found")
@@ -2259,180 +2182,6 @@ async def decide_link_request(rid: str, data: LinkDecision, user: dict = Depends
         "status": status, "decided_by": decided_by, "decided_at": _now_iso(),
     }})
     return {**req, "status": status, "decided_by": decided_by}
-
-
-# --------- Pending matches (reported from Discord, completed by an admin) ---------
-class PendingMatchCreate(BaseModel):
-    ranked: bool = True
-    format: Literal["1v1", "2v2", "3v3"]
-    team_a: List[str]               # player ids
-    team_b: List[str]
-    team_a_rounds: Optional[int] = Field(default=None, ge=0, le=20)  # None = read from screenshot
-    team_b_rounds: Optional[int] = Field(default=None, ge=0, le=20)
-    balance_mode: Optional[str] = None
-    map: Optional[str] = None
-    reported_by: Optional[str] = None
-    confirmed_by: Optional[str] = None
-    source: str = "discord"
-    source_ref: Optional[str] = None   # e.g. link to the Discord message
-    discord_match_id: Optional[str] = None  # the bot's match number, shown in the match log
-    notes: Optional[str] = ""
-    played_at: Optional[str] = None
-
-class PendingPlayerInput(BaseModel):
-    player_id: str
-    champion: str
-    team: Optional[Literal["A", "B"]] = None   # override if players swapped teams in game
-    role: Optional[str] = None          # defaults to the champion's role
-    stats: Optional[PlayerStats] = None
-
-class PendingMatchComplete(BaseModel):
-    players: List[PendingPlayerInput]
-    team_a_rounds: Optional[int] = None
-    team_b_rounds: Optional[int] = None
-    season_id: Optional[str] = None
-    notes: Optional[str] = None
-    confirmed_by: Optional[str] = None   # set by the bot when the players confirmed the result
-
-
-@api_router.post("/pending-matches")
-async def create_pending_match(data: PendingMatchCreate, user: dict = Depends(admin_or_bot)):
-    await check_and_close_expired_seasons()
-    if data.format not in ACTIVE_FORMATS:
-        raise HTTPException(400, "1v1 is no longer a format")
-    size = {"1v1": 1, "2v2": 2, "3v3": 3}[data.format]
-    if len(data.team_a) != size or len(data.team_b) != size:
-        raise HTTPException(400, f"Expected {size} players per team for {data.format}")
-    ids = data.team_a + data.team_b
-    if len(set(ids)) != len(ids):
-        raise HTTPException(400, "A player can only appear once per match")
-    if data.team_a_rounds is not None and data.team_a_rounds == data.team_b_rounds:
-        raise HTTPException(400, "Rounds cannot be tied")
-    for pid in ids:
-        if not await db.players.find_one({"id": pid}):
-            raise HTTPException(404, f"Player {pid} not found")
-    if data.ranked:
-        season = await get_active_ranked_season()
-        if not season:
-            raise HTTPException(400, "There is no active ranked season")
-    else:
-        season = await ensure_unranked_season()
-
-    doc = {
-        "id": str(uuid.uuid4()),
-        "status": "pending",
-        "season_id": season["id"],
-        "ranked": data.ranked,
-        "format": data.format,
-        "team_a": data.team_a,
-        "team_b": data.team_b,
-        "team_a_rounds": data.team_a_rounds,
-        "team_b_rounds": data.team_b_rounds,
-        "balance_mode": data.balance_mode,
-        "map": data.map,
-        "reported_by": data.reported_by,
-        "confirmed_by": data.confirmed_by,
-        "source": data.source,
-        "source_ref": data.source_ref,
-        "discord_match_id": data.discord_match_id,
-        "notes": data.notes or "",
-        "played_at": data.played_at or _now_iso(),
-        "created_at": _now_iso(),
-    }
-    await db.pending_matches.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
-
-
-@api_router.get("/pending-matches")
-async def list_pending_matches(status: Optional[str] = "pending", user: dict = Depends(admin_or_bot)):
-    q = {"status": status} if status else {}
-    return await db.pending_matches.find(q, {"_id": 0}).sort("played_at", 1).to_list(500)
-
-
-@api_router.get("/pending-matches/{pmid}")
-async def get_pending_match(pmid: str, user: dict = Depends(admin_or_bot)):
-    """Status of one reported match; once logged, includes the final match and its stats."""
-    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0, "ocr": 0})
-    if not pm:
-        raise HTTPException(404, "Pending match not found")
-    if pm.get("match_id"):
-        m = await db.matches.find_one({"id": pm["match_id"]}, {"_id": 0})
-        if m:
-            pm["match"] = m
-            pm["match_stats"] = normalize_match_stats(m)
-    return pm
-
-
-@api_router.post("/pending-matches/{pmid}/complete")
-async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: dict = Depends(admin_or_bot)):
-    """Log a reported match: an admin on the Pending page, or the bot once the players confirmed it."""
-    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
-    if not pm:
-        raise HTTPException(404, "Pending match not found")
-    if pm["status"] != "pending":
-        raise HTTPException(409, f"This match was already {pm['status']}")
-    team_of = {pid: "A" for pid in pm["team_a"]}
-    team_of.update({pid: "B" for pid in pm["team_b"]})
-    given = {p.player_id for p in data.players}
-    if given != set(team_of):
-        raise HTTPException(400, "Players must match the reported teams")
-    for p in data.players:
-        if p.team:
-            team_of[p.player_id] = p.team
-    if list(team_of.values()).count("A") != len(team_of) // 2:
-        raise HTTPException(400, "Both teams need the same number of players")
-    players = []
-    for p in data.players:
-        role = p.role or CHAMPION_ROLES.get(p.champion)
-        if not role:
-            raise HTTPException(400, f"Unknown champion '{p.champion}'")
-        players.append(MatchPlayerInput(player_id=p.player_id, champion=p.champion, role=role,
-                                        team=team_of[p.player_id], stats=p.stats))
-    season_id = data.season_id or pm["season_id"]
-    a_rounds = pm.get("team_a_rounds") if data.team_a_rounds is None else data.team_a_rounds
-    b_rounds = pm.get("team_b_rounds") if data.team_b_rounds is None else data.team_b_rounds
-    if a_rounds is None or b_rounds is None:
-        raise HTTPException(400, "Enter the round score")
-    match_in = MatchCreate(
-        season_id=season_id,
-        format=pm["format"],
-        team_a_rounds=a_rounds,
-        team_b_rounds=b_rounds,
-        players=players,
-        notes=pm.get("notes", "") if data.notes is None else data.notes,
-        played_at=pm["played_at"],
-    )
-    match = await _insert_match(match_in, code=pm.get("discord_match_id"))   # posted to the match log below, once MMR is final
-    await db.matches.update_one({"id": match["id"]}, {"$set": {
-        "source": pm.get("source"), "source_ref": pm.get("source_ref"), "map": pm.get("map"),
-        "balance_mode": pm.get("balance_mode"), "reported_by": pm.get("reported_by"),
-        "confirmed_by": data.confirmed_by if user.get("role") == "bot" else None,
-        "completed_by": "players" if user.get("role") == "bot" else (user.get("name") or user.get("email")),
-        "pending_match_id": pmid,
-        "screenshot_id": pmid if pm.get("screenshot") else None,
-    }})
-    if pm.get("screenshot") and pm.get("prefill"):
-        await _learn_icons(pm, {p.player_id: p.champion for p in data.players})
-        final = await db.matches.find_one({"id": match["id"]}, {"_id": 0})
-        await _record_ocr_feedback(pm, final)
-    # Matches can be completed out of order: replay the season so MMR follows played_at.
-    await recompute_season_elo(season_id)
-    await db.pending_matches.update_one({"id": pmid}, {"$set": {
-        "status": "completed", "match_id": match["id"], "completed_at": _now_iso(),
-    }})
-    schedule_match_log(match["id"])  # post the confirmed result to the Discord match log
-    return await db.matches.find_one({"id": match["id"]}, {"_id": 0})
-
-
-@api_router.delete("/pending-matches/{pmid}")
-async def discard_pending_match(pmid: str, user: dict = Depends(admin_required)):
-    res = await db.pending_matches.update_one({"id": pmid, "status": "pending"}, {"$set": {
-        "status": "discarded", "discarded_at": _now_iso(),
-    }})
-    if res.modified_count:
-        await db.screenshots.delete_one({"id": pmid})  # no match will point at it
-    return {"ok": True}
 
 
 # --------- Scoreboard screenshots ---------
@@ -2517,64 +2266,6 @@ async def _roster(pm: dict):
             out.append({"id": pid, "names": [p.get("name"), p.get("ign")]})
         return out
     return await side(pm["team_a"]), await side(pm["team_b"])
-
-
-async def _parse_into_pending(pm: dict) -> dict:
-    shot = await db.screenshots.find_one({"id": pm["id"]})
-    team_a, team_b = await _roster(pm)
-    try:
-        res = await _run_ocr(_read_screenshot, bytes(shot["data"]), team_a, team_b, await _get_icon_refs())
-    except ImportError:
-        res = {"parsed": None, "prefill": {"players": {}, "warnings": [
-            "Screenshot reading isn't installed on the server (rapidocr, onnxruntime, opencv-python-headless)"]}}
-    except Exception as e:  # never lose the upload because the reader failed
-        logging.getLogger(__name__).exception("Scoreboard parse failed")
-        res = {"parsed": None, "prefill": {"players": {}, "warnings": [f"Couldn't read the screenshot ({e.__class__.__name__})"]}}
-    upd = {"ocr": res["parsed"], "prefill": res["prefill"], "parsed_at": _now_iso()}
-    pre = res["prefill"]
-    # Fill the round score from the orbs if nobody entered one
-    if pm.get("team_a_rounds") is None and pre.get("team_a_rounds") is not None and pre.get("team_b_rounds") is not None \
-            and pre["team_a_rounds"] != pre["team_b_rounds"]:
-        upd["team_a_rounds"], upd["team_b_rounds"] = pre["team_a_rounds"], pre["team_b_rounds"]
-    await db.pending_matches.update_one({"id": pm["id"]}, {"$set": upd})
-    out = await db.pending_matches.find_one({"id": pm["id"]}, {"_id": 0})
-    out["ocr_streak"] = await ocr_streak()   # the bot skips player corrections once this is high enough
-    return out
-
-
-@api_router.post("/pending-matches/{pmid}/screenshot")
-async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), uploaded_by: Optional[str] = None,
-                                    user: dict = Depends(admin_or_bot)):
-    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
-    if not pm:
-        raise HTTPException(404, "Pending match not found")
-    if pm["status"] != "pending":
-        raise HTTPException(409, f"This match was already {pm['status']}")
-    ext = (Path(file.filename or "").suffix or ".png").lower()
-    types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
-    if ext not in types:
-        raise HTTPException(400, "Upload a PNG, JPG or WEBP screenshot")
-    data = await file.read()
-    if len(data) > MAX_SCREENSHOT_BYTES:
-        raise HTTPException(400, "Screenshot is too big (max 12 MB)")
-    sha = hashlib.sha256(data).hexdigest()
-    other = await db.screenshots.find_one({"sha256": sha, "id": {"$ne": pmid}}, {"_id": 0, "id": 1})
-    if other:
-        used = await db.pending_matches.find_one({"id": other["id"]}, {"_id": 0}) or {}
-        if used.get("status") in ("pending", "completed"):
-            label = f"match #{used['discord_match_id']}" if used.get("discord_match_id") else "another match"
-            raise HTTPException(409, f"This exact screenshot was already submitted for {label}")
-    meta = {"file": f"{pmid}{ext}", "uploaded_at": _now_iso(),
-            "uploaded_by": uploaded_by or user.get("name") or user.get("email")}
-    await db.screenshots.replace_one({"id": pmid}, {
-        "id": pmid, "data": data, "content_type": types[ext], "size": len(data), "sha256": sha, **meta,
-    }, upsert=True)
-    await db.pending_matches.update_one({"id": pmid}, {"$set": {"screenshot": meta}})
-    pm["screenshot"] = meta
-    out = await _parse_into_pending(pm)   # read from the original upload
-    await _compress_stored(pmid)           # then keep a much smaller copy
-    _spawn(prune_screenshots())
-    return out
 
 
 # --------- Screenshot storage limit ---------
@@ -2703,25 +2394,12 @@ async def prune_screenshots():
             total -= s.get("size") or 0
 
 
-@api_router.post("/pending-matches/{pmid}/reparse")
-async def reparse_pending_screenshot(pmid: str, user: dict = Depends(admin_required)):
-    pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
-    if not pm or not await db.screenshots.find_one({"id": pmid}, {"_id": 1}):
-        raise HTTPException(404, "No screenshot for this match")
-    return await _parse_into_pending(pm)
-
-
 async def _screenshot_response(sid: Optional[str]):
     shot = await db.screenshots.find_one({"id": sid}) if sid else None
     if not shot:
         raise HTTPException(404, "No screenshot")
     return Response(content=bytes(shot["data"]), media_type=shot.get("content_type", "image/png"),
                     headers={"Cache-Control": "private, max-age=86400"})
-
-
-@api_router.get("/pending-matches/{pmid}/screenshot")
-async def get_pending_screenshot(pmid: str):
-    return await _screenshot_response(pmid)
 
 
 @api_router.get("/screenshots/{sid}")
@@ -2871,7 +2549,7 @@ class IgnInput(BaseModel):
 
 
 @api_router.put("/players/{pid}/ign")
-async def set_player_ign(pid: str, data: IgnInput, user: dict = Depends(admin_or_bot)):
+async def set_player_ign(pid: str, data: IgnInput, user: dict = Depends(admin_required)):
     """In-game name - used to match screenshot rows to players when it differs from the website name."""
     if not await db.players.find_one({"id": pid}):
         raise HTTPException(404, "Player not found")
