@@ -6,6 +6,7 @@ import StreakBadge from "@/components/StreakBadge";
 import { useAuth } from "@/AuthContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { TIERS, tierFor } from "@/lib/tiers";
+import SeasonSelect, { newestSeason } from "@/components/SeasonSelect";
 
 const tier = tierFor;
 
@@ -20,8 +21,7 @@ export default function Leaderboard() {
     (async () => {
       const s = await api.get("/seasons");
       setSeasons(s.data);
-      const active = s.data.find((x) => x.active) || s.data[0];
-      setSeasonId(active?.id || "");
+      setSeasonId(newestSeason(s.data)?.id || "");   // the current season, else the newest
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -82,9 +82,8 @@ export default function Leaderboard() {
             data-testid="leaderboard-export-csv">
             <Download className="w-3.5 h-3.5" strokeWidth={3} /> CSV
           </a>}
-          <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="leaderboard-season">
-            {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId} withAll={false}
+            className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="leaderboard-season" />
         </div>
       </div>
 

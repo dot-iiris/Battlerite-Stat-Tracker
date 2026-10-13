@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "@/api";
 import { Grid3x3 } from "lucide-react";
+import SeasonSelect from "@/components/SeasonSelect";
 
 export default function Matrix() {
   const [data, setData] = useState(null);
@@ -39,10 +40,8 @@ export default function Matrix() {
           <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight flex items-center gap-3"><Grid3x3 className="w-8 h-8 text-cyan-400" /> PvP Matrix</h1>
           <p className="text-slate-400 text-sm mt-2">Row player's winrate when facing each column opponent.</p>
         </div>
-        <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="matrix-season">
-          <option value="">All seasons</option>
-          {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
+        <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
+          className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="matrix-season" />
       </div>
 
       {!data || data.players.length === 0 ? (

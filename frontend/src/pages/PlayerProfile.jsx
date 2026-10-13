@@ -6,6 +6,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import ChampionPortrait from "@/components/ChampionPortrait";
 import StreakBadge from "@/components/StreakBadge";
 import { tierFor } from "@/lib/tiers";
+import SeasonSelect from "@/components/SeasonSelect";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -38,10 +39,8 @@ export default function PlayerProfile() {
           <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Player Dossier</div>
           <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight flex items-center gap-3">{stats.player.name}<StreakBadge streak={stats.streak} size="lg" /></h1>
         </div>
-        <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="profile-season">
-          <option value="">All seasons</option>
-          {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
+        <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
+          className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="profile-season" />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

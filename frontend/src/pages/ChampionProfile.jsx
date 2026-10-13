@@ -4,6 +4,7 @@ import api from "@/api";
 import { Flame, Users, Swords, Shield, ArrowLeft, ChevronDown } from "lucide-react";
 import MatchDetails from "@/components/MatchDetails";
 import ChampionPortrait from "@/components/ChampionPortrait";
+import SeasonSelect from "@/components/SeasonSelect";
 
 const roleAccent = (r) =>
   r === "Melee" ? { text: "text-[#FF4655]", bg: "bg-[#FF4655]/10", border: "border-[#FF4655]/40" } :
@@ -66,10 +67,8 @@ export default function ChampionProfile() {
             </div>
           </div>
         </div>
-        <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="champion-profile-season">
-          <option value="">All seasons</option>
-          {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
+        <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
+          className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="champion-profile-season" />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

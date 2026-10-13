@@ -617,6 +617,17 @@ import re
 def is_ranked_season(season: Optional[dict]) -> bool:
     return bool(season) and season.get("ranked", True) is not False
 
+async def season_filter(season_id: Optional[str]) -> dict:
+    """Match query for a season picker value: "" / "all" = every season (unranked included),
+    "ranked" = every ranked season, anything else = that one season."""
+    if not season_id or season_id == "all":
+        return {}
+    if season_id == "ranked":
+        ids = [x["id"] for x in await db.seasons.find({"ranked": {"$ne": False}}, {"_id": 0, "id": 1}).to_list(1000)]
+        return {"season_id": {"$in": ids}}
+    return {"season_id": season_id}
+
+
 async def ensure_unranked_season() -> dict:
     """The single permanent 'Unranked' season. Matches logged here never change MMR."""
     s = await db.seasons.find_one({"ranked": False}, {"_id": 0})
@@ -980,8 +991,7 @@ async def _insert_match(data: MatchCreate) -> dict:
 @api_router.get("/matches")
 async def list_matches(season_id: Optional[str] = None, player_id: Optional[str] = None):
     q = {}
-    if season_id:
-        q["season_id"] = season_id
+    q.update(await season_filter(season_id))
     if player_id:
         q["players.player_id"] = player_id
     docs = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
@@ -1160,8 +1170,7 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
         raise HTTPException(404, "Player not found")
 
     q = {"players.player_id": pid}
-    if season_id:
-        q["season_id"] = season_id
+    q.update(await season_filter(season_id))
     matches = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
 
     # Compute all-time peak across every season (even if filtering current view by one season)
@@ -1204,9 +1213,7 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
     all_players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0}).to_list(1000)}
 
     # admin MMR adjustments, replayed in order with the matches
-    aq = {"player_id": pid, "mmr_track": {"$exists": False}}
-    if season_id:
-        aq["season_id"] = season_id
+    aq = {"player_id": pid, "mmr_track": {"$exists": False}, **(await season_filter(season_id))}
     p_adjs = await db.mmr_adjustments.find(aq, {"_id": 0}).sort("at", 1).to_list(100000)
     ai = 0
 
@@ -1325,8 +1332,7 @@ async def matrix(season_id: Optional[str] = None):
     """Player vs Player matrix. Returns pairs w/ head-to-head record (as opponents)."""
     players = await db.players.find({}, {"_id": 0}).to_list(1000)
     q = {}
-    if season_id:
-        q["season_id"] = season_id
+    q.update(await season_filter(season_id))
     matches = await db.matches.find(q, {"_id": 0}).to_list(10000)
 
     # matrix[a][b] = {matches, a_wins}
@@ -1360,8 +1366,7 @@ async def matrix(season_id: Optional[str] = None):
 async def champion_matrix(season_id: Optional[str] = None):
     """Champion vs Champion winrate when facing each other across teams."""
     q = {}
-    if season_id:
-        q["season_id"] = season_id
+    q.update(await season_filter(season_id))
     matches = await db.matches.find(q, {"_id": 0}).to_list(10000)
 
     # Start from the full roster so unplayed champions still appear
@@ -1414,8 +1419,7 @@ async def recap(days: int = 7, season_id: Optional[str] = None):
     """Weekly recap: top climbers, biggest upsets, champion trends."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     q = {"played_at": {"$gte": cutoff}}
-    if season_id:
-        q["season_id"] = season_id
+    q.update(await season_filter(season_id))
     matches = await db.matches.find(q, {"_id": 0}).sort("played_at", 1).to_list(10000)
 
     all_players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0}).to_list(1000)}
@@ -1547,8 +1551,7 @@ async def champion_stats(name: str, season_id: Optional[str] = None):
         raise HTTPException(404, "Champion not found")
 
     q = {"players.champion": name}
-    if season_id:
-        q["season_id"] = season_id
+    q.update(await season_filter(season_id))
     matches = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
 
     all_players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0}).to_list(1000)}
@@ -3190,8 +3193,7 @@ def _csv_response(rows: list, headers: list, filename: str):
 @app.get("/api/exports/matches.csv")
 async def export_matches_csv(season_id: Optional[str] = None, user: dict = Depends(admin_required)):
     q = {}
-    if season_id:
-        q["season_id"] = season_id
+    q.update(await season_filter(season_id))
     matches = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
     players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0}).to_list(1000)}
     seasons = {s["id"]: s["name"] for s in await db.seasons.find({}, {"_id": 0}).to_list(1000)}

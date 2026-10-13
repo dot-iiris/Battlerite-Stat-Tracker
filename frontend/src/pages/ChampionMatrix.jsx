@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import api from "@/api";
 import { Grid3x3, Flame } from "lucide-react";
 import ChampionPortrait from "@/components/ChampionPortrait";
+import SeasonSelect from "@/components/SeasonSelect";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -50,10 +51,8 @@ export default function ChampionMatrix() {
             <input type="number" min="1" value={minMatches} onChange={(e) => setMinMatches(Number(e.target.value) || 1)}
               className="w-20 bg-[#121828] border border-[#1B2438] rounded px-2 py-1.5 text-sm font-mono-hud text-center" data-testid="cm-min-matches" />
           </div>
-          <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="cm-season">
-            <option value="">All seasons</option>
-            {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
+            className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="cm-season" />
         </div>
       </div>
 

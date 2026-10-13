@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import api from "@/api";
 import { toast } from "sonner";
 import { Sliders, Zap, Users } from "lucide-react";
+import SeasonSelect, { newestSeason } from "@/components/SeasonSelect";
 
 const modes = [
   { key: "mmr", label: "MMR Balance", desc: "Match teams by average ELO only" },
@@ -24,8 +25,7 @@ export default function Matchmaking() {
       const [p, s] = await Promise.all([api.get("/players"), api.get("/seasons")]);
       setPlayers(p.data);
       setSeasons(s.data);
-      const active = s.data.find((x) => x.active) || s.data[0];
-      setSeasonId(active?.id || "");
+      setSeasonId(newestSeason(s.data)?.id || "");   // the current season, else the newest
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -87,9 +87,8 @@ export default function Matchmaking() {
         </div>
         <div>
           <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Season (for MMR)</label>
-          <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="w-full bg-[#121828] border border-[#1B2438] rounded px-3 py-2.5 text-sm" data-testid="mm-season">
-            {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId} withAll={false}
+            className="w-full bg-[#121828] border border-[#1B2438] rounded px-3 py-2.5 text-sm" data-testid="mm-season" />
         </div>
       </div>
 

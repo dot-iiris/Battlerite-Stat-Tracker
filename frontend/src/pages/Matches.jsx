@@ -8,6 +8,7 @@ import EditMatchDialog from "@/components/EditMatchDialog";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import MmrChange from "@/components/MmrChange";
 import MatchDetails from "@/components/MatchDetails";
+import SeasonSelect from "@/components/SeasonSelect";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -68,8 +69,7 @@ export default function Matches() {
       const [s, p] = await Promise.all([api.get("/seasons"), api.get("/players")]);
       setSeasons(s.data);
       setPlayers(p.data);
-      // start on the current season - unless a link opened a specific match, which could be in any season
-      setSeasonFilter((cur) => cur ?? (openId ? "" : (s.data.find((x) => x.active)?.id || "")));
+      setSeasonFilter((cur) => cur ?? "");   // start on All seasons
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -111,10 +111,8 @@ export default function Matches() {
 
       <div className="hud-card p-4 flex flex-wrap gap-3 items-center">
         <Filter className="w-4 h-4 text-cyan-400" />
-        <select value={seasonFilter ?? ""} onChange={(e) => setSeasonFilter(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="matches-filter-season">
-          <option value="">All seasons</option>
-          {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
+        <SeasonSelect seasons={seasons} value={seasonFilter} onChange={setSeasonFilter}
+          className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="matches-filter-season" />
         <select value={playerFilter} onChange={(e) => setPlayerFilter(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="matches-filter-player">
           <option value="">All players</option>
           {players.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}

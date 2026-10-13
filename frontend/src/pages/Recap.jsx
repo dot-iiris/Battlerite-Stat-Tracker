@@ -4,6 +4,7 @@ import ChampionPortrait from "@/components/ChampionPortrait";
 import { Trophy, Flame, Zap, Printer, TrendingUp, TrendingDown, Info, Swords } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import SeasonSelect from "@/components/SeasonSelect";
 
 export default function Recap() {
   const [data, setData] = useState(null);
@@ -40,10 +41,8 @@ export default function Recap() {
               <option value={90}>90 days</option>
             </select>
           </div>
-          <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="recap-season">
-            <option value="">All seasons</option>
-            {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
+            className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="recap-season" />
           <button onClick={() => window.print()} className="btn-glow bg-cyan-400 hover:bg-cyan-300 text-black font-mono-hud font-bold uppercase tracking-wider px-4 py-2 rounded flex items-center gap-2" data-testid="recap-print">
             <Printer className="w-4 h-4" strokeWidth={3} /> Print
           </button>
