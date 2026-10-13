@@ -971,6 +971,10 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
         if len(set(champs)) != len(champs):
             raise HTTPException(400, f"Team {team_label} cannot pick the same champion twice")
 
+    if existing.get("screenshot_id") and _ocr_fields(existing) != _ocr_fields({
+            "team_a_rounds": data.team_a_rounds, "team_b_rounds": data.team_b_rounds,
+            "players": [p.model_dump() for p in data.players]}):
+        await reset_ocr_streak()   # an admin corrected a screenshot result
     tracks = {p["player_id"]: p.get("mmr_track") for p in existing["players"]}  # keep merge history
     await db.matches.update_one({"id": mid}, {"$set": {
         "season_id": data.season_id,
@@ -2287,7 +2291,9 @@ async def _parse_into_pending(pm: dict) -> dict:
             and pre["team_a_rounds"] != pre["team_b_rounds"]:
         upd["team_a_rounds"], upd["team_b_rounds"] = pre["team_a_rounds"], pre["team_b_rounds"]
     await db.pending_matches.update_one({"id": pm["id"]}, {"$set": upd})
-    return await db.pending_matches.find_one({"id": pm["id"]}, {"_id": 0})
+    out = await db.pending_matches.find_one({"id": pm["id"]}, {"_id": 0})
+    out["ocr_streak"] = await ocr_streak()   # the bot skips player corrections once this is high enough
+    return out
 
 
 @api_router.post("/pending-matches/{pmid}/screenshot")
@@ -2678,6 +2684,33 @@ def _ocr_outcome(read, final) -> Optional[str]:
     return "correct" if read == final else "wrong"
 
 
+def _ocr_fields(m: dict) -> tuple:
+    """What the screenshot reader fills in, for spotting corrections."""
+    def stats(p):
+        st = p.get("stats") or {}
+        return tuple(st.get(f) for f in ("score", "damage", "protection", "disables"))
+    return (m.get("team_a_rounds"), m.get("team_b_rounds"),
+            sorted((p["player_id"], p.get("champion"), p.get("team"), stats(p)) for p in m.get("players") or []))
+
+
+async def reset_ocr_streak():
+    await db.settings.update_one({"id": "ocr_streak"}, {"$set": {"reset_at": _now_iso()}}, upsert=True)
+
+
+async def ocr_streak() -> int:
+    """Screenshots in a row (newest first) that were logged without any correction, by players
+    in Discord or by an admin. Any correction, including an admin editing a logged screenshot
+    match, starts it again from 0."""
+    reset_at = ((await db.settings.find_one({"id": "ocr_streak"})) or {}).get("reset_at") or ""
+    q = {"created_at": {"$gt": reset_at}} if reset_at else {}
+    n = 0
+    for d in await db.ocr_feedback.find(q, {"_id": 0, "items": 1}).sort("created_at", -1).to_list(50):
+        if not d.get("items") or any(i.get("outcome") != "correct" for i in d["items"]):
+            break
+        n += 1
+    return n
+
+
 async def _record_ocr_feedback(pm: dict, final: dict):
     pre = pm.get("prefill") or {}
     read_players = pre.get("players") or {}
@@ -2750,6 +2783,7 @@ async def ocr_accuracy(user: dict = Depends(admin_required)):
         "fields": [{"field": f, **c, "accuracy": rate(c)} for f, c in by_field.items()],
         "resolutions": [{"resolution": r, **c, "accuracy": rate(c)} for r, c in sorted(by_res.items())],
         "recent_corrections": corrections,
+        "streak": await ocr_streak(),
     }
 
 

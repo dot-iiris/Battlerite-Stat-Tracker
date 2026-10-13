@@ -68,6 +68,12 @@ export default function OcrAccuracy() {
             Based on {data.screenshots} logged screenshot{data.screenshots === 1 ? "" : "s"}: what the reader suggested vs what was logged.
             <span className="text-slate-500"> Missed = the reader left it blank.</span>
           </div>
+          {data.streak !== undefined && (
+            <div className="text-xs text-slate-400">
+              <span className="font-mono-hud text-cyan-400">{data.streak}</span> screenshot{data.streak === 1 ? "" : "s"} in a row logged with no corrections.
+              <span className="text-slate-500"> At 5 the Discord bot stops offering players corrections; any correction (yours included) starts it again.</span>
+            </div>
+          )}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <Table rows={data.fields.filter((f) => f.correct + f.wrong + f.missed > 0)} first="field" firstLabel="Field" />
             <Table rows={data.resolutions} first="resolution" firstLabel="Resolution" />
