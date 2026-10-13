@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 from itertools import combinations, permutations
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Form
 from fastapi.responses import RedirectResponse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -198,6 +198,7 @@ class MatchCreate(BaseModel):
     players: List[MatchPlayerInput]
     notes: Optional[str] = ""
     played_at: Optional[str] = None
+    screenshot_id: Optional[str] = None   # a screenshot read with /screenshots/read, attached on save
 
 
 # --------- ELO ---------
@@ -885,7 +886,12 @@ async def _team_mmr(player_ids: List[str], season_id: str) -> float:
 @api_router.post("/matches")
 async def create_match(data: MatchCreate, user: dict = Depends(admin_required)):
     """Log Match tab: save the match and post it to the Discord match log."""
+    if data.screenshot_id:
+        await _staged_screenshot(data.screenshot_id)   # check it before saving anything
     doc = await _insert_match(data)
+    if data.screenshot_id:
+        await _attach_screenshot(doc["id"], data.screenshot_id, user)
+        doc = await db.matches.find_one({"id": doc["id"]}, {"_id": 0})
     schedule_match_log(doc["id"])
     return doc
 
@@ -1010,7 +1016,9 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
         if len(set(champs)) != len(champs):
             raise HTTPException(400, f"Team {team_label} cannot pick the same champion twice")
 
-    if existing.get("screenshot_id") and _ocr_fields(existing) != _ocr_fields({
+    if data.screenshot_id:
+        await _staged_screenshot(data.screenshot_id)
+    elif existing.get("screenshot_id") and _ocr_fields(existing) != _ocr_fields({
             "team_a_rounds": data.team_a_rounds, "team_b_rounds": data.team_b_rounds,
             "players": [p.model_dump() for p in data.players]}):
         await reset_ocr_streak()   # an admin corrected a screenshot result
@@ -1028,6 +1036,8 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
             **({"mmr_track": tracks[p.player_id]} if tracks.get(p.player_id) else {}),
         } for p in data.players],
     }})
+    if data.screenshot_id:
+        await _attach_screenshot(mid, data.screenshot_id, user)
     # Recompute affected season(s)
     await recompute_season_elo(data.season_id)
     if existing["season_id"] != data.season_id:
@@ -2463,7 +2473,12 @@ async def prune_screenshots():
         for m in await db.matches.find({"screenshot_id": {"$ne": None}}, {"_id": 0, "id": 1, "screenshot_id": 1}).to_list(100000):
             used_by.setdefault(m["screenshot_id"], []).append(m["id"])
         keep, first = [], {}
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=STAGED_HOURS)).isoformat()
         for s in shots:
+            if s.get("staged"):      # read for a form that hasn't been saved (yet)
+                if s.get("uploaded_at", "") < cutoff:
+                    await db.screenshots.delete_one({"id": s["id"]})
+                continue
             pm = pendings.get(s["id"]) or {}
             if pm.get("status") == "pending":
                 keep.append(s)          # still being confirmed - never touched
@@ -2513,6 +2528,11 @@ async def get_pending_screenshot(pmid: str):
     return await _screenshot_response(pmid)
 
 
+@api_router.get("/screenshots/{sid}")
+async def get_screenshot(sid: str):
+    return await _screenshot_response(sid)
+
+
 @api_router.get("/matches/{mid}/screenshot")
 async def get_match_screenshot(mid: str):
     m = await db.matches.find_one({"id": mid}, {"_id": 0})
@@ -2529,13 +2549,31 @@ async def _forget_screenshot(sid: Optional[str], keep_for_mid: str):
     await db.screenshots.delete_one({"id": sid})
 
 
-@api_router.post("/matches/{mid}/screenshot")
-async def add_match_screenshot(mid: str, file: UploadFile = File(...), user: dict = Depends(admin_required)):
-    """Add (or replace) the scoreboard screenshot of a match that's already logged. The reader
-    learns the champion portraits from it; the match's own data isn't changed."""
-    m = await db.matches.find_one({"id": mid}, {"_id": 0})
-    if not m:
-        raise HTTPException(404, "Match not found")
+STAGED_HOURS = 6   # a screenshot read but never saved is deleted after this
+
+
+def _rounds_agree(read_a, read_b, a: int, b: int) -> bool:
+    """The screenshot's round score is this match's. Either way round counts, because the
+    reader can mix up which side is which team (3-0 read as 0-3)."""
+    return sorted((read_a, read_b)) == sorted((a, b))
+
+
+@api_router.post("/screenshots/read")
+async def read_screenshot(file: UploadFile = File(...), team_a: str = Form(...), team_b: str = Form(...),
+                          match_id: Optional[str] = Form(None), user: dict = Depends(admin_required)):
+    """Read a scoreboard for the Log Match / Edit Match forms. The screenshot is kept for a few
+    hours and attached when the form is saved (with screenshot_id); what's saved is compared with
+    what was read, for the reader's accuracy and its corrections-in-a-row count. For a match that's
+    already logged, the screenshot's round score must be that match's."""
+    a_ids = [x for x in team_a.split(",") if x]
+    b_ids = [x for x in team_b.split(",") if x]
+    if not a_ids or len(a_ids) != len(b_ids):
+        raise HTTPException(400, "Pick every player in both teams first")
+    match = None
+    if match_id:
+        match = await db.matches.find_one({"id": match_id}, {"_id": 0})
+        if not match:
+            raise HTTPException(404, "Match not found")
     ext = (Path(file.filename or "").suffix or ".png").lower()
     types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
     if ext not in types:
@@ -2544,41 +2582,82 @@ async def add_match_screenshot(mid: str, file: UploadFile = File(...), user: dic
     if len(data) > MAX_SCREENSHOT_BYTES:
         raise HTTPException(400, "Screenshot is too big (max 12 MB)")
     sha = hashlib.sha256(data).hexdigest()
-    other = await db.screenshots.find_one({"sha256": sha}, {"_id": 0, "id": 1})
-    if other:
-        if other["id"] == m.get("screenshot_id"):
-            raise HTTPException(409, "This match already has that screenshot")
-        used = await db.matches.find_one({"screenshot_id": other["id"]}, {"_id": 0, "discord_match_id": 1, "played_at": 1})
+    for other in await db.screenshots.find({"sha256": sha}, {"_id": 0, "id": 1, "staged": 1}).to_list(20):
+        used = await db.matches.find_one({"screenshot_id": other["id"]}, {"_id": 0, "id": 1, "discord_match_id": 1, "played_at": 1})
         pend = await db.pending_matches.find_one({"id": other["id"], "status": "pending"}, {"_id": 1})
+        if used and match and used["id"] == match["id"]:
+            raise HTTPException(409, "This match already has that screenshot")
         if used or pend:
             label = f"match #{used['discord_match_id']}" if used and used.get("discord_match_id") else \
                 (f"the match on {used['played_at'][:10]}" if used else "a result still being confirmed")
             raise HTTPException(409, f"This exact screenshot is already attached to {label}")
+    roster_a, roster_b = await _roster({"team_a": a_ids, "team_b": b_ids})
+    try:
+        res = await _run_ocr(_read_screenshot, data, roster_a, roster_b, await _get_icon_refs())
+    except ImportError:
+        raise HTTPException(503, "Screenshot reading isn't installed on the server")
+    pre, parsed = res["prefill"], res["parsed"] or {}
+    if not pre.get("players"):
+        raise HTTPException(400, "; ".join(pre.get("warnings") or []) or "Couldn't read that screenshot")
+    if match:
+        ra, rb = pre.get("team_a_rounds"), pre.get("team_b_rounds")
+        a, b = match["team_a_rounds"], match["team_b_rounds"]
+        if ra is not None and rb is not None:
+            if not _rounds_agree(ra, rb, a, b):
+                raise HTTPException(400, f"This screenshot's round score ({ra}-{rb}) isn't this match's ({a}-{b}) - "
+                                         "it looks like a different game")
+            pre["team_a_rounds"], pre["team_b_rounds"] = a, b
+        else:   # orbs unreadable: only accept it if the names clearly belong to this match
+            sure = sum((p.get("name_confidence") or 0) >= 0.8 for p in pre["players"].values())
+            if sure * 2 < len(a_ids) * 2:
+                raise HTTPException(400, "Couldn't read the round score, and the names don't clearly match this "
+                                         "match's players - is it the right screenshot?")
+            pre.setdefault("warnings", []).append("The round score couldn't be read - matched by player names instead")
+            pre["team_a_rounds"], pre["team_b_rounds"] = a, b
     sid = str(uuid.uuid4())
     await db.screenshots.insert_one({
         "id": sid, "data": data, "content_type": types[ext], "size": len(data), "sha256": sha,
         "file": f"{sid}{ext}", "uploaded_at": _now_iso(), "uploaded_by": user.get("name") or user.get("email"),
-        "match_id": mid,
+        "staged": True, "staged_for": match_id, "read": {"prefill": pre, "image_size": parsed.get("image_size")},
     })
-    # learn the champion portraits, using the champions already logged for this match
-    learned = 0
+    return {"screenshot_id": sid, "players": pre.get("players") or {}, "teams": pre.get("teams") or {},
+            "team_a_rounds": pre.get("team_a_rounds"), "team_b_rounds": pre.get("team_b_rounds"),
+            "warnings": pre.get("warnings") or []}
+
+
+async def _staged_screenshot(sid: str) -> dict:
+    shot = await db.screenshots.find_one({"id": sid}, {"_id": 0, "data": 0})
+    if not shot or not shot.get("staged"):
+        raise HTTPException(400, "That screenshot has expired - upload it again")
+    return shot
+
+
+async def _attach_screenshot(mid: str, sid: str, user: dict):
+    """Attach a read screenshot to a saved match: compare what was saved with what was read
+    (accuracy + corrections in a row), learn the champion portraits, store it compressed."""
+    shot = await _staged_screenshot(sid)
+    final = await db.matches.find_one({"id": mid}, {"_id": 0})
+    read = shot.get("read") or {}
+    pm = {"id": sid, "prefill": read.get("prefill") or {}, "ocr": {"image_size": read.get("image_size")}}
     try:
-        team_a, team_b = await _roster({"team_a": [p["player_id"] for p in m["players"] if p["team"] == "A"],
-                                        "team_b": [p["player_id"] for p in m["players"] if p["team"] == "B"]})
-        res = await _run_ocr(_read_screenshot, data, team_a, team_b, await _get_icon_refs())
-        before = await db.champion_icons.count_documents({})
-        await _learn_icons({"id": sid, "prefill": res["prefill"]}, {p["player_id"]: p["champion"] for p in m["players"]})
-        learned = await db.champion_icons.count_documents({}) - before
-    except ImportError:
-        pass
+        await _record_ocr_feedback(pm, final)
+        await _learn_icons(pm, {p["player_id"]: p["champion"] for p in final["players"]})
     except Exception:
-        logging.getLogger(__name__).exception("Couldn't read the screenshot added to match %s", mid)
+        logging.getLogger(__name__).exception("Couldn't learn from the screenshot of match %s", mid)
+    await db.screenshots.update_one({"id": sid}, {"$set": {"match_id": mid}, "$unset": {"staged": "", "staged_for": ""}})
     await _compress_stored(sid)
-    old = m.get("screenshot_id")
+    old = final.get("screenshot_id")
     await db.matches.update_one({"id": mid}, {"$set": {"screenshot_id": sid}, "$unset": {"screenshot_removed": ""}})
-    await _forget_screenshot(old, mid)
+    if old and old != sid:
+        await _forget_screenshot(old, mid)
     _spawn(prune_screenshots())
-    return {"screenshot_id": sid, "icons_learned": learned}
+
+
+@api_router.delete("/screenshots/{sid}")
+async def discard_staged_screenshot(sid: str, user: dict = Depends(admin_required)):
+    """The form was cancelled: drop a screenshot that was read but never saved."""
+    await db.screenshots.delete_one({"id": sid, "staged": True})
+    return {"ok": True}
 
 
 @api_router.delete("/matches/{mid}/screenshot")

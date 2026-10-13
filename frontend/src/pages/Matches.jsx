@@ -205,7 +205,7 @@ export default function Matches() {
                   </div>
                 </div>
                 {open && (
-                  <MatchDetails match={m} playerName={playerName}
+                  <MatchDetails match={m} playerName={playerName} onChanged={load}
                     seasonName={seasons.find((s) => s.id === m.season_id)?.name} />
                 )}
               </div>

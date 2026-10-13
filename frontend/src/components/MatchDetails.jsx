@@ -4,6 +4,7 @@ import api, { API } from "@/api";
 import { Image as ImageIcon, ImagePlus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/AuthContext";
+import EditMatchDialog from "@/components/EditMatchDialog";
 import MmrChange from "@/components/MmrChange";
 import ChampionPortrait from "@/components/ChampionPortrait";
 
@@ -19,7 +20,7 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 10
 
 // Expanded view of one match: per-player scoreboard stats (round averages)
 // and the derived numbers from /api/matches/{id}/stats.
-export default function MatchDetails({ match, playerName, seasonName }) {
+export default function MatchDetails({ match, playerName, seasonName, onChanged }) {
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(false);
   const { isAdmin } = useAuth();
@@ -28,18 +29,20 @@ export default function MatchDetails({ match, playerName, seasonName }) {
   const fileRef = useRef(null);
   useEffect(() => { setShotId(match.screenshot_id || null); }, [match.screenshot_id]);
 
+  const [reading, setReading] = useState(null);   // what was read from a new screenshot, for the edit form
   const uploadShot = async (file) => {
     if (!file) return;
     const form = new FormData();
     form.append("file", file);
+    form.append("team_a", match.players.filter((p) => p.team === "A").map((p) => p.player_id).join(","));
+    form.append("team_b", match.players.filter((p) => p.team === "B").map((p) => p.player_id).join(","));
+    form.append("match_id", match.id);
     setShotBusy(true);
     try {
-      const { data } = await api.post(`/matches/${match.id}/screenshot`, form);
-      setShotId(data.screenshot_id);
-      match.screenshot_id = data.screenshot_id;   // keep the list's copy in step
-      toast.success(data.icons_learned ? `Screenshot added - learned ${data.icons_learned} champion portrait${data.icons_learned === 1 ? "" : "s"}` : "Screenshot added");
+      const { data } = await api.post("/screenshots/read", form);
+      setReading(data);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Upload failed");
+      toast.error(err?.response?.data?.detail || "Couldn't read that screenshot");
     } finally {
       setShotBusy(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -151,7 +154,7 @@ export default function MatchDetails({ match, playerName, seasonName }) {
               onChange={(e) => uploadShot(e.target.files?.[0])} data-testid={`match-shot-input-${match.id}`} />
             <button type="button" disabled={shotBusy} onClick={() => fileRef.current?.click()}
               className="text-slate-400 hover:text-cyan-400 flex items-center gap-1 uppercase disabled:opacity-50">
-              <ImagePlus className="w-3 h-3" /> {shotBusy ? "Uploading…" : shotId ? "Replace screenshot" : "Add screenshot"}
+              <ImagePlus className="w-3 h-3" /> {shotBusy ? "Reading…" : shotId ? "Replace screenshot" : "Add screenshot"}
             </button>
             {shotId && (
               <button type="button" onClick={removeShot} className="text-slate-500 hover:text-[#FF2E55] flex items-center gap-1 uppercase">
@@ -192,6 +195,18 @@ export default function MatchDetails({ match, playerName, seasonName }) {
             Norm. dmg = damage minus enemy protection × damage share.
           </div>
         </>
+      )}
+      {reading && (
+        // keep clicks in the dialog from also opening/closing the match card underneath
+        <div onClick={(e) => e.stopPropagation()}>
+        <EditMatchDialog match={match} screenshot={reading} onClose={() => setReading(null)}
+          onSaved={(updated) => {
+            setReading(null);
+            setShotId(updated?.screenshot_id || null);
+            match.screenshot_id = updated?.screenshot_id || null;
+            onChanged?.();
+          }} />
+        </div>
       )}
     </div>
   );

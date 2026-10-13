@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import api from "@/api";
+import { useEffect, useRef, useState } from "react";
+import api, { API } from "@/api";
 import { toast } from "sonner";
-import { X, Save } from "lucide-react";
+import { X, Save, AlertTriangle, Image as ImageIcon } from "lucide-react";
 import { invalidateChampionStats } from "@/lib/championStats";
 
 const STAT_FIELDS = ["score", "damage", "protection", "disables"];
@@ -15,7 +15,32 @@ const emptySlot = () => ({ player_id: "", champion: "", score: "", damage: "", p
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
-export default function EditMatchDialog({ match, onClose, onSaved }) {
+// With `screenshot` (from /screenshots/read), the form starts filled from what was read; saving
+// attaches the screenshot, and what you save is compared with what was read.
+function readSlots(match, screenshot) {
+  const read = screenshot?.players || {};
+  const teamOf = (p) => screenshot?.teams?.[p.player_id] || p.team;
+  const slot = (p) => {
+    const base = toSlot(p);
+    const r = read[p.player_id] || {};
+    const out = { ...base, champion: r.champion || base.champion };
+    for (const f of STAT_FIELDS) {
+      const v = r.stats?.[f];
+      if (v !== null && v !== undefined) out[f] = String(v);
+    }
+    return out;
+  };
+  let a = match.players.filter((p) => teamOf(p) === "A");
+  let b = match.players.filter((p) => teamOf(p) === "B");
+  if (a.length !== b.length) {   // the screenshot's teams don't add up - keep the logged ones
+    a = match.players.filter((p) => p.team === "A");
+    b = match.players.filter((p) => p.team === "B");
+  }
+  return [a.map(slot), b.map(slot)];
+}
+
+export default function EditMatchDialog({ match, screenshot = null, onClose, onSaved }) {
+  const [initA, initB] = readSlots(match, screenshot);
   const [seasons, setSeasons] = useState([]);
   const [players, setPlayers] = useState([]);
   const [champions, setChampions] = useState([]);
@@ -23,10 +48,16 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
   const [seasonId, setSeasonId] = useState(match.season_id);
   const [teamARounds, setTeamARounds] = useState(match.team_a_rounds);
   const [teamBRounds, setTeamBRounds] = useState(match.team_b_rounds);
-  const [teamA, setTeamA] = useState(match.players.filter((p) => p.team === "A").map(toSlot));
-  const [teamB, setTeamB] = useState(match.players.filter((p) => p.team === "B").map(toSlot));
+  const [teamA, setTeamA] = useState(initA);
+  const [teamB, setTeamB] = useState(initB);
   const [notes, setNotes] = useState(match.notes || "");
   const [submitting, setSubmitting] = useState(false);
+  const saved = useRef(false);
+  // closing without saving: the read screenshot isn't kept
+  const close = () => {
+    if (screenshot && !saved.current) api.delete(`/screenshots/${screenshot.screenshot_id}`).catch(() => {});
+    onClose();
+  };
 
   useEffect(() => {
     (async () => {
@@ -67,8 +98,8 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
     }
     setSubmitting(true);
     try {
-      await api.put(`/matches/${match.id}`, {
-        season_id: seasonId, format, notes,
+      const { data } = await api.put(`/matches/${match.id}`, {
+        season_id: seasonId, format, notes, screenshot_id: screenshot?.screenshot_id || null,
         team_a_rounds: Number(teamARounds), team_b_rounds: Number(teamBRounds),
         players: all.map((s) => {
           const filled = STAT_FIELDS.some((f) => s[f] !== "");
@@ -79,8 +110,9 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
         }),
       });
       invalidateChampionStats();
-      toast.success("Match updated · ELO recomputed");
-      onSaved();
+      toast.success(screenshot ? "Screenshot added · match updated" : "Match updated · ELO recomputed");
+      saved.current = true;
+      onSaved(data);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
     } finally { setSubmitting(false); }
@@ -121,10 +153,24 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto" onClick={onClose} data-testid="edit-match-dialog">
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto" onClick={close} data-testid="edit-match-dialog">
       <div className="hud-card hud-corner w-full max-w-3xl my-8 p-6 relative" onClick={(e) => e.stopPropagation()}>
-        <button onClick={onClose} className="absolute top-3 right-3 text-slate-500 hover:text-white p-1" data-testid="edit-close"><X className="w-5 h-5" /></button>
-        <h2 className="font-heading text-2xl font-black uppercase tracking-tight mb-4">Edit Match</h2>
+        <button onClick={close} className="absolute top-3 right-3 text-slate-500 hover:text-white p-1" data-testid="edit-close"><X className="w-5 h-5" /></button>
+        <h2 className="font-heading text-2xl font-black uppercase tracking-tight mb-4">{screenshot ? "Add Screenshot" : "Edit Match"}</h2>
+        {screenshot && (
+          <div className="mb-4 flex flex-wrap gap-3 items-start text-xs text-slate-300 border border-cyan-400/30 bg-cyan-400/5 rounded p-3">
+            <a href={`${API}/screenshots/${screenshot.screenshot_id}`} target="_blank" rel="noreferrer" className="block w-40 shrink-0" title="Open full size">
+              <img src={`${API}/screenshots/${screenshot.screenshot_id}`} alt="Scoreboard" className="w-full rounded border border-[#1B2438]" />
+            </a>
+            <div className="space-y-1 min-w-0 flex-1">
+              <div className="flex items-center gap-1 text-cyan-400"><ImageIcon className="w-3.5 h-3.5" /> Filled in from the screenshot - check it against the image, fix anything wrong, then save.</div>
+              <div className="text-slate-500">What you save is compared with what was read: any fix counts as a correction for the reader.</div>
+              {(screenshot.warnings || []).map((w, i) => (
+                <div key={i} className="flex items-start gap-1 text-amber-400"><AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {w}</div>
+              ))}
+            </div>
+          </div>
+        )}
         <form onSubmit={submit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
@@ -171,7 +217,7 @@ export default function EditMatchDialog({ match, onClose, onSaved }) {
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-3 border-t border-[#1B2438]">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-mono-hud uppercase border border-[#1B2438] rounded hover:border-slate-400">Cancel</button>
+            <button type="button" onClick={close} className="px-4 py-2 text-sm font-mono-hud uppercase border border-[#1B2438] rounded hover:border-slate-400">Cancel</button>
             <button type="submit" disabled={submitting} className="btn-glow bg-cyan-400 hover:bg-cyan-300 text-black font-mono-hud font-bold uppercase tracking-wider px-4 py-2 rounded flex items-center gap-2 disabled:opacity-60" data-testid="edit-submit">
               <Save className="w-4 h-4" strokeWidth={3} /> {submitting ? "Saving…" : "Save & Recompute"}
             </button>
