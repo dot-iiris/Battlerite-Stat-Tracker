@@ -328,6 +328,7 @@ async def startup():
     await db.screenshots.create_index("sha256")
     _spawn(prune_screenshots())
     _spawn(_backfill_mmr_before())
+    schedule_leaderboard_push()   # picks up settings changes (e.g. DISCORD_LEADERBOARD_SIZE) on every restart
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "@/api";
-import { Trophy, TrendingUp, Download, Info } from "lucide-react";
+import { Trophy, TrendingUp, Download, Info, Send } from "lucide-react";
+import { toast } from "sonner";
 import StreakBadge from "@/components/StreakBadge";
 import { useAuth } from "@/AuthContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -79,6 +80,14 @@ export default function Leaderboard() {
           </h1>
         </div>
         <div className="flex gap-2 items-end">
+          {isAdmin && <button type="button" title="Refresh the leaderboard post in Discord now (current season)"
+            onClick={() => api.post("/admin/push-leaderboard")
+              .then(() => toast.success("Discord leaderboard updated"))
+              .catch((err) => toast.error(err?.response?.data?.detail || "Couldn't update the Discord post"))}
+            className="border border-[#1B2438] hover:border-cyan-400/60 text-slate-200 font-mono-hud font-bold uppercase tracking-wider text-xs px-4 py-2 rounded flex items-center gap-2"
+            data-testid="leaderboard-push-discord">
+            <Send className="w-3.5 h-3.5" strokeWidth={3} /> Discord
+          </button>}
           {isAdmin && <a href={csvHref}
             className="btn-glow bg-cyan-400 hover:bg-cyan-300 text-black font-mono-hud font-bold uppercase tracking-wider text-xs px-4 py-2 rounded flex items-center gap-2"
             data-testid="leaderboard-export-csv">
