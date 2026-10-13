@@ -48,7 +48,8 @@ CARRY_WIN_MULTIPLIER = 1.15       # +15% when carrying a sub-average teammate
 _on = lambda name: os.environ.get(name, "false").strip().lower() in ("1", "true", "yes", "on")
 PLACEMENT_BONUS = _on("PLACEMENT_BONUS")
 CARRY_BONUS = _on("CARRY_BONUS")
-UNRANKED_SEASON_NAME = "Unranked"  # permanent season for unranked games (no MMR)
+UNRANKED_SEASON_NAME = "Unranked"
+ACTIVE_FORMATS = ("2v2", "3v3")   # 1v1 is retired: old 1v1 games stay viewable, no new ones  # permanent season for unranked games (no MMR)
 
 CHAMPIONS = [
     # Melee
@@ -911,6 +912,8 @@ async def _team_mmr(player_ids: List[str], season_id: str) -> float:
 @api_router.post("/matches")
 async def create_match(data: MatchCreate, user: dict = Depends(admin_required)):
     """Log Match tab: save the match and post it to the Discord match log."""
+    if data.format not in ACTIVE_FORMATS:
+        raise HTTPException(400, "1v1 is no longer a format - log it as 2v2 or 3v3")
     if data.screenshot_id:
         await _staged_screenshot(data.screenshot_id)   # check it before saving anything
     doc = await _insert_match(data)
@@ -1025,6 +1028,8 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
     existing = await db.matches.find_one({"id": mid})
     if not existing:
         raise HTTPException(404, "Match not found")
+    if data.format not in ACTIVE_FORMATS and existing.get("format") != data.format:
+        raise HTTPException(400, "1v1 is no longer a format - use 2v2 or 3v3")
     team_a = [p for p in data.players if p.team == "A"]
     team_b = [p for p in data.players if p.team == "B"]
     expected = {"1v1": 1, "2v2": 2, "3v3": 3}[data.format]
@@ -1099,7 +1104,7 @@ async def leaderboard(season_id: Optional[str] = None, format: Optional[str] = N
 
     players = await db.players.find({}, {"_id": 0}).to_list(1000)
     q = {"season_id": season_id}
-    if format and format in ("1v1", "2v2", "3v3"):
+    if format and format in ("1v1", "2v2", "3v3"):   # 1v1 is retired, but old 1v1 games can still be viewed
         q["format"] = format
     matches = await db.matches.find(q, {"_id": 0}).sort("played_at", 1).to_list(10000)
 
@@ -1170,7 +1175,8 @@ async def leaderboard(season_id: Optional[str] = None, format: Optional[str] = N
         s["mmr"] = round(s["mmr"], 2)
         s["peak_mmr"] = round(s["peak_mmr"], 2)
         s["winrate"] = round((s["wins"] / s["matches"] * 100) if s["matches"] > 0 else 0, 1)
-        result.append(s)
+        if s["matches"]:   # players with no games in this season/format aren't listed
+            result.append(s)
     result.sort(key=lambda x: (-x["mmr"], -x["wins"]))
     for i, r in enumerate(result):
         r["rank"] = i + 1
@@ -2128,6 +2134,8 @@ class PendingMatchComplete(BaseModel):
 @api_router.post("/pending-matches")
 async def create_pending_match(data: PendingMatchCreate, user: dict = Depends(admin_or_bot)):
     await check_and_close_expired_seasons()
+    if data.format not in ACTIVE_FORMATS:
+        raise HTTPException(400, "1v1 is no longer a format")
     size = {"1v1": 1, "2v2": 2, "3v3": 3}[data.format]
     if len(data.team_a) != size or len(data.team_b) != size:
         raise HTTPException(400, f"Expected {size} players per team for {data.format}")
@@ -3042,6 +3050,8 @@ async def import_matches(data: ImportMatches, user: dict = Depends(admin_require
         raise HTTPException(404, f"No match {data.before}")
     if not data.matches:
         raise HTTPException(400, "Nothing to import")
+    if any(im.format not in ACTIVE_FORMATS for im in data.matches):
+        raise HTTPException(400, "1v1 is no longer a format")
     sid = target["season_id"]
     prev = await db.matches.find({"season_id": sid, "played_at": {"$lt": target["played_at"]}}, {"_id": 0, "played_at": 1}) \
         .sort("played_at", -1).to_list(1)

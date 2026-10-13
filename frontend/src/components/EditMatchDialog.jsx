@@ -239,7 +239,7 @@ export default function EditMatchDialog({ match, screenshot: readAtOpen = null, 
             <div>
               <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Format</label>
               <div className="flex gap-1">
-                {["1v1", "2v2", "3v3"].map((f) => (
+                {(match.format === "1v1" ? ["1v1", "2v2", "3v3"] : ["2v2", "3v3"]).map((f) => (
                   <button type="button" key={f} onClick={() => applyFormat(f)}
                     className={`flex-1 px-2 py-1.5 font-mono-hud text-xs uppercase rounded border ${format === f ? "bg-cyan-400 text-black border-cyan-400 font-bold" : "bg-[#121828] border-[#1B2438] text-slate-300"}`}
                     data-testid={`edit-format-${f}`}>{f}</button>

@@ -218,7 +218,7 @@ export default function LogMatch() {
           <div>
             <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Format</label>
             <div className="flex gap-2">
-              {["1v1", "2v2", "3v3"].map((fmt) => (
+              {["2v2", "3v3"].map((fmt) => (
                 <button type="button" key={fmt} onClick={() => applyFormat(fmt)}
                   className={`flex-1 px-3 py-2 font-mono-hud text-sm uppercase tracking-wider rounded border transition-colors ${format === fmt ? "bg-cyan-400 text-black border-cyan-400 font-bold" : "bg-[#121828] border-[#1B2438] text-slate-300 hover:border-cyan-400/40"}`}
                   data-testid={`format-${fmt}`}

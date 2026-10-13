@@ -101,7 +101,6 @@ export default function Leaderboard() {
       <div className="flex gap-1 flex-wrap">
         {[
           { k: "all", label: "All Formats" },
-          { k: "1v1", label: "1v1" },
           { k: "2v2", label: "2v2" },
           { k: "3v3", label: "3v3" },
         ].map((f) => (
