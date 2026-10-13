@@ -41,6 +41,11 @@ BASE_MMR = 1200
 PLACEMENT_MATCHES = 10            # first N matches of the season (per player)
 PLACEMENT_WIN_MULTIPLIER = 2.0    # placement wins earn 2x MMR
 CARRY_WIN_MULTIPLIER = 1.15       # +15% when carrying a sub-average teammate
+# Both bonuses are off for now. Turn one back on with PLACEMENT_BONUS=true / CARRY_BONUS=true in
+# the backend settings; the season is replayed on the next start so every match uses the same rules.
+_on = lambda name: os.environ.get(name, "false").strip().lower() in ("1", "true", "yes", "on")
+PLACEMENT_BONUS = _on("PLACEMENT_BONUS")
+CARRY_BONUS = _on("CARRY_BONUS")
 UNRANKED_SEASON_NAME = "Unranked"  # permanent season for unranked games (no MMR)
 
 CHAMPIONS = [
@@ -268,10 +273,10 @@ def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
             placement_bonus = False
             carry_bonus = False
             if won and delta > 0 and bonuses:
-                if placement_counts.get(pid, 0) < PLACEMENT_MATCHES:
+                if PLACEMENT_BONUS and placement_counts.get(pid, 0) < PLACEMENT_MATCHES:
                     delta *= PLACEMENT_WIN_MULTIPLIER
                     placement_bonus = True
-                if has_weak_mate and team_mmrs[pid] > opp_avg:
+                if CARRY_BONUS and has_weak_mate and team_mmrs[pid] > opp_avg:
                     other_mmrs = [m for pid2, m in team_mmrs.items() if pid2 != pid]
                     if any(m < opp_avg for m in other_mmrs):
                         delta *= CARRY_WIN_MULTIPLIER
@@ -303,6 +308,7 @@ async def startup():
     await db.screenshots.create_index("sha256")
     _spawn(prune_screenshots())
     _spawn(_backfill_mmr_before())
+    _spawn(_replay_if_rules_changed())
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -750,6 +756,17 @@ def rating_key(mp: dict) -> str:
 
 def counts_for_mmr(mp: dict) -> bool:
     return not mp.get("mmr_track")
+
+
+async def _replay_if_rules_changed():
+    """The MMR bonus settings changed since the last start: replay every season with the new rules."""
+    rules = {"placement": PLACEMENT_BONUS, "carry": CARRY_BONUS}
+    saved = await db.settings.find_one({"id": "mmr_rules"}, {"_id": 0})
+    if saved and saved.get("rules") == rules:
+        return
+    for sid in await db.matches.distinct("season_id"):
+        await recompute_season_elo(sid)
+    await db.settings.update_one({"id": "mmr_rules"}, {"$set": {"rules": rules}}, upsert=True)
 
 
 async def _backfill_mmr_before():
