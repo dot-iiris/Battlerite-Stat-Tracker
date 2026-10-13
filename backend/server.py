@@ -2519,6 +2519,78 @@ async def get_match_screenshot(mid: str):
     return await _screenshot_response((m or {}).get("screenshot_id"))
 
 
+async def _forget_screenshot(sid: Optional[str], keep_for_mid: str):
+    """Delete a stored screenshot nothing else points at any more."""
+    if not sid or await db.matches.find_one({"screenshot_id": sid, "id": {"$ne": keep_for_mid}}, {"_id": 1}):
+        return
+    pm = await db.pending_matches.find_one({"id": sid}, {"_id": 0, "status": 1})
+    if pm and pm.get("status") == "pending":
+        return
+    await db.screenshots.delete_one({"id": sid})
+
+
+@api_router.post("/matches/{mid}/screenshot")
+async def add_match_screenshot(mid: str, file: UploadFile = File(...), user: dict = Depends(admin_required)):
+    """Add (or replace) the scoreboard screenshot of a match that's already logged. The reader
+    learns the champion portraits from it; the match's own data isn't changed."""
+    m = await db.matches.find_one({"id": mid}, {"_id": 0})
+    if not m:
+        raise HTTPException(404, "Match not found")
+    ext = (Path(file.filename or "").suffix or ".png").lower()
+    types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+    if ext not in types:
+        raise HTTPException(400, "Upload a PNG, JPG or WEBP screenshot")
+    data = await file.read()
+    if len(data) > MAX_SCREENSHOT_BYTES:
+        raise HTTPException(400, "Screenshot is too big (max 12 MB)")
+    sha = hashlib.sha256(data).hexdigest()
+    other = await db.screenshots.find_one({"sha256": sha}, {"_id": 0, "id": 1})
+    if other:
+        if other["id"] == m.get("screenshot_id"):
+            raise HTTPException(409, "This match already has that screenshot")
+        used = await db.matches.find_one({"screenshot_id": other["id"]}, {"_id": 0, "discord_match_id": 1, "played_at": 1})
+        pend = await db.pending_matches.find_one({"id": other["id"], "status": "pending"}, {"_id": 1})
+        if used or pend:
+            label = f"match #{used['discord_match_id']}" if used and used.get("discord_match_id") else \
+                (f"the match on {used['played_at'][:10]}" if used else "a result still being confirmed")
+            raise HTTPException(409, f"This exact screenshot is already attached to {label}")
+    sid = str(uuid.uuid4())
+    await db.screenshots.insert_one({
+        "id": sid, "data": data, "content_type": types[ext], "size": len(data), "sha256": sha,
+        "file": f"{sid}{ext}", "uploaded_at": _now_iso(), "uploaded_by": user.get("name") or user.get("email"),
+        "match_id": mid,
+    })
+    # learn the champion portraits, using the champions already logged for this match
+    learned = 0
+    try:
+        team_a, team_b = await _roster({"team_a": [p["player_id"] for p in m["players"] if p["team"] == "A"],
+                                        "team_b": [p["player_id"] for p in m["players"] if p["team"] == "B"]})
+        res = await _run_ocr(_read_screenshot, data, team_a, team_b, await _get_icon_refs())
+        before = await db.champion_icons.count_documents({})
+        await _learn_icons({"id": sid, "prefill": res["prefill"]}, {p["player_id"]: p["champion"] for p in m["players"]})
+        learned = await db.champion_icons.count_documents({}) - before
+    except ImportError:
+        pass
+    except Exception:
+        logging.getLogger(__name__).exception("Couldn't read the screenshot added to match %s", mid)
+    await _compress_stored(sid)
+    old = m.get("screenshot_id")
+    await db.matches.update_one({"id": mid}, {"$set": {"screenshot_id": sid}, "$unset": {"screenshot_removed": ""}})
+    await _forget_screenshot(old, mid)
+    _spawn(prune_screenshots())
+    return {"screenshot_id": sid, "icons_learned": learned}
+
+
+@api_router.delete("/matches/{mid}/screenshot")
+async def remove_match_screenshot(mid: str, user: dict = Depends(admin_required)):
+    m = await db.matches.find_one({"id": mid}, {"_id": 0, "screenshot_id": 1})
+    if not m:
+        raise HTTPException(404, "Match not found")
+    await db.matches.update_one({"id": mid}, {"$set": {"screenshot_id": None}})
+    await _forget_screenshot(m.get("screenshot_id"), mid)
+    return {"ok": True}
+
+
 class IgnInput(BaseModel):
     ign: Optional[str] = None
 

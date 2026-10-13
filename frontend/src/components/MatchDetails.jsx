@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { API } from "@/api";
-import { Image as ImageIcon } from "lucide-react";
+import { Image as ImageIcon, ImagePlus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { useAuth } from "@/AuthContext";
 import MmrChange from "@/components/MmrChange";
 import ChampionPortrait from "@/components/ChampionPortrait";
 
@@ -20,6 +22,41 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 10
 export default function MatchDetails({ match, playerName, seasonName }) {
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(false);
+  const { isAdmin } = useAuth();
+  const [shotId, setShotId] = useState(match.screenshot_id || null);   // admins can add/replace/remove it here
+  const [shotBusy, setShotBusy] = useState(false);
+  const fileRef = useRef(null);
+  useEffect(() => { setShotId(match.screenshot_id || null); }, [match.screenshot_id]);
+
+  const uploadShot = async (file) => {
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    setShotBusy(true);
+    try {
+      const { data } = await api.post(`/matches/${match.id}/screenshot`, form);
+      setShotId(data.screenshot_id);
+      match.screenshot_id = data.screenshot_id;   // keep the list's copy in step
+      toast.success(data.icons_learned ? `Screenshot added - learned ${data.icons_learned} champion portrait${data.icons_learned === 1 ? "" : "s"}` : "Screenshot added");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload failed");
+    } finally {
+      setShotBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const removeShot = async () => {
+    if (!window.confirm("Remove this match's screenshot? The match itself isn't changed.")) return;
+    try {
+      await api.delete(`/matches/${match.id}/screenshot`);
+      setShotId(null);
+      match.screenshot_id = null;
+      toast.success("Screenshot removed");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't remove it");
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -31,7 +68,7 @@ export default function MatchDetails({ match, playerName, seasonName }) {
 
   const byPlayer = Object.fromEntries((stats?.players || []).map((p) => [p.player_id, p]));
   const hasStats = (stats?.players || []).some((p) => p.raw);
-  const shotUrl = match.screenshot_id ? `${API}/matches/${match.id}/screenshot` : null;
+  const shotUrl = shotId ? `${API}/matches/${match.id}/screenshot?v=${shotId}` : null;
 
   const teamRows = (team) => match.players.filter((p) => p.team === team).map((p) => {
     const s = byPlayer[p.player_id] || {};
@@ -107,6 +144,21 @@ export default function MatchDetails({ match, playerName, seasonName }) {
           <a href={shotUrl} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline flex items-center gap-1">
             <ImageIcon className="w-3 h-3" /> Screenshot
           </a>
+        )}
+        {isAdmin && (
+          <>
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
+              onChange={(e) => uploadShot(e.target.files?.[0])} data-testid={`match-shot-input-${match.id}`} />
+            <button type="button" disabled={shotBusy} onClick={() => fileRef.current?.click()}
+              className="text-slate-400 hover:text-cyan-400 flex items-center gap-1 uppercase disabled:opacity-50">
+              <ImagePlus className="w-3 h-3" /> {shotBusy ? "Uploading…" : shotId ? "Replace screenshot" : "Add screenshot"}
+            </button>
+            {shotId && (
+              <button type="button" onClick={removeShot} className="text-slate-500 hover:text-[#FF2E55] flex items-center gap-1 uppercase">
+                <Trash2 className="w-3 h-3" /> Remove
+              </button>
+            )}
+          </>
         )}
       </div>
 
