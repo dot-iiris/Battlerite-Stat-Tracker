@@ -335,6 +335,10 @@ async def startup():
         await backfill_match_codes()
     except Exception:
         logging.getLogger(__name__).exception("Match code backfill failed")
+    try:
+        await clean_discord_notes()
+    except Exception:
+        logging.getLogger(__name__).exception("Discord notes cleanup failed")
     schedule_leaderboard_push()   # picks up settings changes (e.g. DISCORD_LEADERBOARD_SIZE) on every restart
 
     # Seed admin
@@ -776,6 +780,29 @@ async def backfill_match_codes():
     await db.counters.insert_one({"_id": "match-codes-v2", "at": _now_iso()})
     for sid in touched:
         schedule_match_log_resync(sid, "")
+
+
+BOT_NOTE_RE = re.compile(r"^Discord match #[\w-]+( - no screenshot)?(.*)$", re.DOTALL)
+
+def strip_bot_note(notes: str) -> str:
+    """'Discord match #f94749 - no screenshot' -> 'No screenshot' (the match code is shown anyway).
+    Anything an admin wrote after it is kept."""
+    m = BOT_NOTE_RE.match(notes or "")
+    if not m:
+        return notes
+    rest = m.group(2).strip().lstrip("-·").strip()
+    return " - ".join(x for x in ["No screenshot" if m.group(1) else "", rest] if x)
+
+async def clean_discord_notes():
+    """One-off: drop the bot's 'Discord match #...' text from match notes (and from matches still
+    waiting to be confirmed). Only the website changes - nothing is posted or edited in Discord."""
+    if await db.counters.find_one({"_id": "discord-notes-v1"}):
+        return
+    q = {"notes": {"$regex": "^Discord match #"}}
+    for coll in (db.matches, db.pending_matches):
+        for d in await coll.find(q, {"_id": 1, "notes": 1}).to_list(100000):
+            await coll.update_one({"_id": d["_id"]}, {"$set": {"notes": strip_bot_note(d["notes"])}})
+    await db.counters.insert_one({"_id": "discord-notes-v1", "at": _now_iso()})
 
 
 class ReserveCode(BaseModel):
