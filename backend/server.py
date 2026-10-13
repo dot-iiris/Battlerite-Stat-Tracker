@@ -3023,6 +3023,7 @@ class ImportedMatch(BaseModel):
     notes: Optional[str] = ""
     map: Optional[str] = None
     balance_mode: Optional[str] = None
+    played_at: Optional[str] = None   # when it was really played - kept if that's still before `before`
 
 class ImportMatches(BaseModel):
     before: str                       # the live match they go just before: its id or Discord number (#f94749)
@@ -3050,6 +3051,12 @@ async def import_matches(data: ImportMatches, user: dict = Depends(admin_require
     t_start = when(prev[0]["played_at"]) if prev else t_end - timedelta(minutes=10 * (len(data.matches) + 1))
     n = len(data.matches)
     times = [(t_start + (t_end - t_start) * (i + 1) / (n + 1)).isoformat() for i in range(n)]
+    try:   # their real times, if those still fall (in order) between the previous match and `before`
+        real = [when(im.played_at) for im in data.matches] if all(im.played_at for im in data.matches) else None
+    except ValueError:
+        real = None
+    if real and all(a < b for a, b in zip([t_start] + real, real + [t_end])):
+        times = [t.isoformat() for t in real]
     problems = []
     for i, im in enumerate(data.matches):
         for p in im.players:
@@ -3059,6 +3066,9 @@ async def import_matches(data: ImportMatches, user: dict = Depends(admin_require
                 problems.append(f"match {i + 1}: unknown player {p.player_id}")
     if problems:
         raise HTTPException(400, "; ".join(problems))
+    refs = [im.played_at for im in data.matches if im.played_at]
+    if refs and await db.matches.find_one({"source": "import", "import_ref": {"$in": refs}}, {"_id": 1}):
+        raise HTTPException(409, "These matches have already been imported")
     later = await db.matches.find({"season_id": sid, "played_at": {"$gte": target["played_at"]}}, {"_id": 0}) \
         .sort("played_at", 1).to_list(100000)
     if data.dry_run:
@@ -3072,7 +3082,8 @@ async def import_matches(data: ImportMatches, user: dict = Depends(admin_require
                                                    team=p.team, stats=p.stats) for p in im.players])
         doc = await _insert_match(mc)
         await db.matches.update_one({"id": doc["id"]}, {"$set": {
-            "source": "import", "map": im.map, "balance_mode": im.balance_mode}})
+            "source": "import", "map": im.map, "balance_mode": im.balance_mode,
+            "import_ref": im.played_at}})   # its original time, so the same match can't be imported twice
         new_ids.append(doc["id"])
     await recompute_season_elo(sid)
     if MATCH_LOG_WEBHOOK:
@@ -3083,6 +3094,35 @@ async def import_matches(data: ImportMatches, user: dict = Depends(admin_require
                 await db.matches.update_one({"id": m["id"]}, {"$unset": {"discord_log": ""}})
         _spawn(_backfill_match_log(new_ids + [m["id"] for m in later]))
     return {"imported": new_ids, "played_at": times, "reposted": [m.get("discord_match_id") or m["id"] for m in later]}
+
+
+@api_router.post("/admin/matches/{mid}/attach-screenshot")
+async def attach_screenshot_as_is(mid: str, file: UploadFile = File(...), user: dict = Depends(admin_required)):
+    """Attach a screenshot to a logged match without reading it (imports). It isn't compared
+    with the match, so it doesn't count toward the reader's accuracy."""
+    m = await db.matches.find_one({"id": mid}, {"_id": 0, "id": 1, "screenshot_id": 1})
+    if m is None:
+        raise HTTPException(404, "Match not found")
+    ext = (Path(file.filename or "").suffix or ".png").lower()
+    types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+    if ext not in types:
+        raise HTTPException(400, "Upload a PNG, JPG or WEBP screenshot")
+    data = await file.read()
+    if len(data) > MAX_SCREENSHOT_BYTES:
+        raise HTTPException(400, "Screenshot is too big (max 12 MB)")
+    sha = hashlib.sha256(data).hexdigest()
+    if await db.screenshots.find_one({"sha256": sha, "staged": {"$ne": True}}, {"_id": 1}):
+        raise HTTPException(409, "That screenshot is already stored")
+    sid = str(uuid.uuid4())
+    await db.screenshots.insert_one({"id": sid, "data": data, "content_type": types[ext], "size": len(data), "sha256": sha,
+                                     "file": f"{sid}{ext}", "uploaded_at": _now_iso(), "match_id": mid,
+                                     "uploaded_by": user.get("name") or user.get("email")})
+    await _compress_stored(sid)
+    old = m.get("screenshot_id")
+    await db.matches.update_one({"id": mid}, {"$set": {"screenshot_id": sid}})
+    if old:
+        await _forget_screenshot(old, mid)
+    return {"screenshot_id": sid}
 
 
 async def remove_match_log(m: dict):
