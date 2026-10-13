@@ -1655,6 +1655,9 @@ class MatchmakingRequest(BaseModel):
     format: Literal["2v2", "3v3"]
     mode: Literal["mmr", "synergy", "hybrid"] = "hybrid"
     season_id: Optional[str] = None
+    # teams (lists of player ids) not to repeat - e.g. the same players' previous match. The best split
+    # without any of them is used; only if every split repeats one is the best overall used.
+    avoid_teams: Optional[List[List[str]]] = None
 
 def role_synergy_score(roles: List[str]) -> float:
     """Higher is better. Reward role coverage."""
@@ -1695,6 +1698,8 @@ async def matchmaking(data: MatchmakingRequest):
 
     ids = list(players.keys())
     best = None
+    best_fresh = None   # best split that doesn't repeat an avoided team
+    avoid = {frozenset(t) for t in (data.avoid_teams or []) if t}
 
     for combo in combinations(ids, team_size):
         team_a = list(combo)
@@ -1731,7 +1736,14 @@ async def matchmaking(data: MatchmakingRequest):
         }
         if best is None or entry["balance_score"] > best["balance_score"]:
             best = entry
+        repeats = frozenset(team_a) in avoid or frozenset(team_b) in avoid
+        if not repeats and (best_fresh is None or entry["balance_score"] > best_fresh["balance_score"]):
+            best_fresh = entry
 
+    if avoid:
+        chosen = best_fresh or best
+        chosen["avoided_repeat"] = best_fresh is not None and best_fresh is not best
+        return chosen
     return best
 
 
