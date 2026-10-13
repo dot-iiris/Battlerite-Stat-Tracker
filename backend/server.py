@@ -23,7 +23,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
+import secrets
 from pydantic import BaseModel, Field, EmailStr
 
 
@@ -669,8 +670,27 @@ async def get_active_ranked_season() -> Optional[dict]:
     return await db.seasons.find_one({"active": True, "ranked": {"$ne": False}}, {"_id": 0})
 
 
-# --------- Match codes: S2-3v3-014 = Season 2, a 3v3, the season's 14th match (U-... = unranked) ---------
-MATCH_CODE_RE = re.compile(r"^(S\d+|U)-(1v1|2v2|3v3)-\d{3,}$")
+# --------- Match codes: S2-3v3-a1f9 = Season 2, a 3v3, match a1f9 (U-... = unranked) ---------
+# The last part is a random 4-digit hex id, unique across every match ever (so "#a1f9" alone finds it too).
+HEX_ID_RE = re.compile(r"^[0-9a-f]{4}$")
+MATCH_CODE_RE = re.compile(r"^(S\d+|U)-(1v1|2v2|3v3)-([0-9a-f]{4})$")
+
+def norm_code(text: Optional[str]) -> str:
+    """'#s2-3V3-A1F9' -> 'S2-3v3-a1f9'; anything else just lowercased."""
+    k = (text or "").strip().lstrip("#")
+    parts = k.split("-")
+    if len(parts) == 3:
+        return f"{parts[0].upper()}-{parts[1].lower()}-{parts[2].lower()}"
+    return k.lower()
+
+def code_hex(code: Optional[str]) -> Optional[str]:
+    k = norm_code(code)
+    m = MATCH_CODE_RE.match(k)
+    if m:
+        return m.group(3)
+    if re.match(r"^[0-9a-f]{4}([0-9a-f]{2})?$", k):   # a bare id, or an old 6-character one (keeps its start)
+        return k[:4]
+    return None
 
 async def season_code(season: dict) -> str:
     if not is_ranked_season(season):
@@ -684,42 +704,76 @@ async def season_code(season: dict) -> str:
 
 async def code_fits(code: Optional[str], season: dict, fmt: str) -> bool:
     """Is this a new-style code for this season and format?"""
-    return bool(code) and bool(MATCH_CODE_RE.match(code)) and code.startswith(f"{await season_code(season)}-{fmt}-")
+    return bool(MATCH_CODE_RE.match(code or "")) and code.startswith(f"{await season_code(season)}-{fmt}-")
 
-async def next_match_code(season: dict, fmt: str) -> str:
-    """Hand out the season's next number (shared by both formats). Never reused, even if the match is cancelled."""
-    c = await db.counters.find_one_and_update({"_id": f"match-code:{season['id']}"}, {"$inc": {"seq": 1}},
-                                              upsert=True, return_document=ReturnDocument.AFTER)
-    return f"{await season_code(season)}-{fmt}-{c['seq']:03d}"
+async def hex_taken(h: str, except_mid: Optional[str] = None) -> bool:
+    q = {"discord_match_id": {"$regex": f"-{h}$"}}
+    if except_mid:
+        q["id"] = {"$ne": except_mid}
+    return bool(await db.matches.find_one(q, {"_id": 1}))
+
+async def new_hex() -> str:
+    """A hex id nobody has had before. Reserved ids are never reused, even if the match is cancelled."""
+    for _ in range(500):
+        h = secrets.token_hex(2)
+        try:
+            await db.match_codes.insert_one({"_id": h, "at": _now_iso()})
+        except DuplicateKeyError:
+            continue
+        if not await hex_taken(h):
+            return h
+    raise HTTPException(503, "Couldn't find a free match id")
+
+async def claim_hex(h: str, except_mid: Optional[str] = None) -> bool:
+    """Keep an id the match already has (reserved by the bot, or made up while the website was down)."""
+    if await hex_taken(h, except_mid):
+        return False
+    try:
+        await db.match_codes.insert_one({"_id": h, "at": _now_iso()})
+    except DuplicateKeyError:
+        pass   # reserved earlier - for this match
+    return True
+
+async def make_code(season: dict, fmt: str, wanted: Optional[str] = None, mid: Optional[str] = None) -> str:
+    h = code_hex(wanted) if wanted else None
+    if not (h and await claim_hex(h, mid)):
+        h = await new_hex()
+    return f"{await season_code(season)}-{fmt}-{h}"
 
 def match_ref_query(key: str) -> dict:
-    """Find a match by its id, its code (any capitalisation) or an old code it used to have (#f94749)."""
+    """Find a match by its id, its code (any capitalisation), just its hex id (#a1f9),
+    or an old code it used to have (#f94749)."""
     k = (key or "").strip().lstrip("#")
-    keys = list({k, k.lower(), k.upper().replace("V", "v")})
-    return {"$or": [{"id": k}, {"discord_match_id": {"$in": keys}}, {"legacy_refs": {"$in": keys}}]}
+    keys = list({k, k.lower(), norm_code(k)})
+    q = [{"id": k}, {"discord_match_id": {"$in": keys}}, {"legacy_refs": {"$in": keys}}]
+    if HEX_ID_RE.match(k.lower()):
+        q.append({"discord_match_id": {"$regex": f"-{k.lower()}$"}})
+    return {"$or": q}
 
 async def backfill_match_codes():
-    """One-off: number every existing match per season in the order they were played.
-    Old codes stay findable (legacy_refs); Discord match log posts are edited to show the new codes."""
-    if await db.counters.find_one({"_id": "match-codes-backfilled"}):
+    """One-off: give every existing match a code. Old ids keep their first 4 characters where free
+    (f94749 -> S1-3v3-f947) and stay findable (legacy_refs); Discord match log posts are edited."""
+    if await db.counters.find_one({"_id": "match-codes-v2"}):
         return
-    seasons = await db.seasons.find({}, {"_id": 0}).to_list(1000)
-    touched = []
-    for season in seasons:
-        docs = await db.matches.find({"season_id": season["id"]}, {"_id": 1, "id": 1, "format": 1, "discord_match_id": 1}) \
-            .sort([("played_at", 1), ("_id", 1)]).to_list(100000)
-        prefix = await season_code(season)
-        for i, d in enumerate(docs, 1):
-            code = f"{prefix}-{d['format']}-{i:03d}"
-            upd = {"$set": {"discord_match_id": code}}
-            old = d.get("discord_match_id")
-            if old and old != code:
-                upd["$addToSet"] = {"legacy_refs": old}
-            await db.matches.update_one({"_id": d["_id"]}, upd)
-        if docs:
-            await db.counters.update_one({"_id": f"match-code:{season['id']}"}, {"$max": {"seq": len(docs)}}, upsert=True)
-            touched.append(season["id"])
-    await db.counters.insert_one({"_id": "match-codes-backfilled", "at": _now_iso()})
+    seasons = {x["id"]: x for x in await db.seasons.find({}, {"_id": 0}).to_list(1000)}
+    docs = await db.matches.find({}, {"_id": 0, "id": 1, "season_id": 1, "format": 1, "discord_match_id": 1, "legacy_refs": 1}) \
+        .sort("played_at", 1).to_list(100000)
+    touched = set()
+    for d in docs:
+        season = seasons.get(d["season_id"])
+        if not season:
+            continue
+        old = d.get("discord_match_id")
+        if await code_fits(old, season, d["format"]) and await claim_hex(code_hex(old), d["id"]):
+            continue
+        hexy = [r for r in [old] + (d.get("legacy_refs") or []) if r and re.match(r"^[0-9a-f]{6}$", r)]
+        code = await make_code(season, d["format"], hexy[0][:4] if hexy else None, d["id"])
+        upd = {"$set": {"discord_match_id": code}}
+        if old and old != code:
+            upd["$addToSet"] = {"legacy_refs": old}
+        await db.matches.update_one({"id": d["id"]}, upd)
+        touched.add(d["season_id"])
+    await db.counters.insert_one({"_id": "match-codes-v2", "at": _now_iso()})
     for sid in touched:
         schedule_match_log_resync(sid, "")
 
@@ -735,7 +789,7 @@ async def reserve_match_code(data: ReserveCode, user: dict = Depends(admin_or_bo
     season = await get_active_ranked_season() if data.ranked else await ensure_unranked_season()
     if not season:
         raise HTTPException(400, "There is no active ranked season")
-    return {"code": await next_match_code(season, data.format), "season_id": season["id"]}
+    return {"code": await make_code(season, data.format), "season_id": season["id"]}
 
 async def check_and_close_expired_seasons():
     """Auto-close active seasons whose end_date has passed. Spawn next season."""
@@ -1073,12 +1127,10 @@ async def _insert_match(data: MatchCreate, code: Optional[str] = None) -> dict:
         "team_b_mmr_before": round(team_b_mmr, 2),
         "bonus_rules": rules,   # this match keeps these even if the settings change later
     }
-    if await code_fits(code, season, data.format):
-        doc["discord_match_id"] = code
-    else:   # no code yet, or one from another season / an old random one
-        doc["discord_match_id"] = await next_match_code(season, data.format)
-        if code:
-            doc["legacy_refs"] = [code]
+    # keeps the id the bot reserved; a new one if there's none (or it's an old-style id)
+    doc["discord_match_id"] = await make_code(season, data.format, code)
+    if code and norm_code(code) != doc["discord_match_id"]:
+        doc["legacy_refs"] = [code]
     await db.matches.insert_one(doc)
     doc.pop("_id", None)
     schedule_leaderboard_push()
@@ -1140,7 +1192,8 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
         raise HTTPException(404, "Season not found")
     recode = {}
     if not await code_fits(existing.get("discord_match_id"), new_season, data.format):
-        recode = {"discord_match_id": await next_match_code(new_season, data.format)}
+        # same hex id, new season/format part
+        recode = {"discord_match_id": await make_code(new_season, data.format, existing.get("discord_match_id"), mid)}
         if existing.get("discord_match_id"):
             await db.matches.update_one({"id": mid}, {"$addToSet": {"legacy_refs": existing["discord_match_id"]}})
     await db.matches.update_one({"id": mid}, {"$set": {

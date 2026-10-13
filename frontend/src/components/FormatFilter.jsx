@@ -24,9 +24,9 @@ export default function FormatFilter({ value, onChange, testid = "format-filter"
   );
 }
 
-// The match's number, e.g. #S2-3v3-014
+// The match's code, e.g. #S2-3v3-a1f9
 export function MatchCode({ match, className = "" }) {
   if (!match?.discord_match_id) return null;
   return <span className={`font-mono-hud text-[10px] tracking-wider text-cyan-400/80 ${className}`}
-    title="Match number: season · format · match">#{match.discord_match_id}</span>;
+    title="Match code: season · format · id">#{match.discord_match_id}</span>;
 }
