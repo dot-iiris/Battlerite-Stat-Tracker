@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import api from "@/api";
 import { toast } from "sonner";
@@ -55,13 +55,13 @@ export default function Matches() {
     });
   }, [openId, matches]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const params = {};
     if (seasonFilter) params.season_id = seasonFilter;
     if (playerFilter) params.player_id = playerFilter;
     const m = await api.get("/matches", { params });
     setMatches(m.data);
-  };
+  }, [seasonFilter, playerFilter]);
 
   useEffect(() => {
     (async () => {
@@ -74,7 +74,7 @@ export default function Matches() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { if (seasonFilter !== null) load(); }, [seasonFilter, playerFilter]);
+  useEffect(() => { if (seasonFilter !== null) load(); }, [seasonFilter, load]);
 
   const playerName = (id) => players.find((p) => p.id === id)?.name || "—";
 
