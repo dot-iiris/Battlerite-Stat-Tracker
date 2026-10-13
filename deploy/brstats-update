@@ -87,8 +87,10 @@ fi
 rm -f /tmp/brstats-web-*.tgz
 if [ ! -f "$SITE/frontend/build/index.html" ] || changed frontend "$FRONT"; then
   log "Building the website on the server (the live site keeps running; this takes a while)"
-  as_app tee "$SITE/frontend/.env.production.local" >/dev/null <<'EOF2'
+  SITE_URL=$(grep -E '^PUBLIC_SITE_URL=' "$APP/backend.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r' | sed 's#/*$##')
+  as_app tee "$SITE/frontend/.env.production.local" >/dev/null <<EOF2
 REACT_APP_BACKEND_URL=
+REACT_APP_SITE_URL=$SITE_URL
 GENERATE_SOURCEMAP=false
 EOF2
   cd "$SITE/frontend"

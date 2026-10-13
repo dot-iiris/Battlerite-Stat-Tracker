@@ -5,7 +5,10 @@ Administrators log each match, recording the teams, champions and round score,
 along with the scoreboard figures when a screenshot is available. From these
 records the site calculates seasonal MMR and produces leaderboards, player and
 champion pages, PvP and champion matrices, balanced teams for upcoming games,
-and a weekly recap. The live deployment is hosted at https://br.iarhm.xyz.
+and a weekly recap.
+
+The site is currently in use by the group at https://br.iarhm.xyz, where the
+statistics are open for anyone to view.
 
 The project is a fork of MagicMan-CT's
 [Battlerite-Stat-Tracker](https://github.com/MagicMan-CT/Battlerite-Stat-Tracker),
@@ -51,7 +54,10 @@ The frontend is run from frontend/:
     echo REACT_APP_BACKEND_URL=http://localhost:8001 > .env.development.local
     yarn start
 
-The site is then available at http://localhost:3000.
+The site is then available at http://localhost:3000. For production builds,
+REACT_APP_SITE_URL should be set to the site's public address (for example
+https://stats.example.com) so that link previews in Discord and other apps can
+find the preview image.
 
 The script scripts/seed_demo.py populates an empty database with fictitious
 players and matches for testing. It signs in as admin@arenaops.gg with the

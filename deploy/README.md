@@ -7,7 +7,7 @@
 2. **Open ports 80 and 443**: Networking → Virtual cloud networks → your VCN → Security
    lists → Default → Add ingress rules: source `0.0.0.0/0`, TCP, destination ports `80,443`.
    (The server's own firewall is opened by the setup script.)
-3. **DNS**: point `br.iarhm.xyz` (A record) at the instance's public IP.
+3. **DNS**: point your domain (e.g. `stats.example.com`, A record) at the instance's public IP.
 4. **Upload settings, bot and data** from the PC: `upload-to-oracle.bat`. It copies
    `backend/.env.live`, the bot and a copy of the database, then runs `brstats-finish`
    on the server, which starts everything and gets the HTTPS certificate.

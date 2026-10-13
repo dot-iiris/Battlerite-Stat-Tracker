@@ -6,7 +6,7 @@
 # brstats-api / brstats-bot services. They start once you upload your settings,
 # bot and data with brstats-finish (see deploy/README.md).
 set -euo pipefail
-DOMAIN="${DOMAIN:-br.iarhm.xyz}"
+DOMAIN="${DOMAIN:-stats.example.com}"
 APP=/opt/brstats
 SITE=$APP/site
 export DEBIAN_FRONTEND=noninteractive

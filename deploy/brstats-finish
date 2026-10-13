@@ -115,7 +115,7 @@ if [ -n "$DOMAIN" ] && [ -n "$my_ip" ] && [ "$my_ip" = "$dns_ip" ]; then
 else
   echo "    $DOMAIN points to ${dns_ip:-nothing}, this server is ${my_ip:-unknown}."
   echo "    Point the DNS record at ${my_ip:-this server}, wait a few minutes, then run:"
-  echo "      sudo certbot --nginx -d ${DOMAIN:-br.iarhm.xyz} --agree-tos --register-unsafely-without-email --redirect"
+  echo "      sudo certbot --nginx -d ${DOMAIN:-stats.example.com} --agree-tos --register-unsafely-without-email --redirect"
   echo "    Until then the site works at http://${my_ip:-<server ip>}"
 fi
 rm -f "$ZIP"   # it holds your secrets
