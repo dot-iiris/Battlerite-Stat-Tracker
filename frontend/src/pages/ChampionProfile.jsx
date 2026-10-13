@@ -5,6 +5,7 @@ import { Flame, Users, Swords, Shield, ArrowLeft, ChevronDown } from "lucide-rea
 import MatchDetails from "@/components/MatchDetails";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
+import FormatFilter, { byFormat, MatchCode } from "@/components/FormatFilter";
 
 const roleAccent = (r) =>
   r === "Melee" ? { text: "text-[#FF4655]", bg: "bg-[#FF4655]/10", border: "border-[#FF4655]/40" } :
@@ -19,6 +20,7 @@ export default function ChampionProfile() {
   const [players, setPlayers] = useState([]);
   const [openId, setOpenId] = useState(null);
   const [showAll, setShowAll] = useState(false);
+  const [format, setFormat] = useState("all");
 
   useEffect(() => {
     api.get("/seasons").then((r) => setSeasons(r.data));
@@ -45,7 +47,7 @@ export default function ChampionProfile() {
   );
 
   const accent = roleAccent(stats.role);
-  const allMatches = stats.matches || stats.recent_matches || [];
+  const allMatches = (stats.matches || stats.recent_matches || []).filter(byFormat(format));
   const shown = showAll ? allMatches : allMatches.slice(0, 10);
   const playerName = (id) => players.find((p) => p.id === id)?.name || "—";
   const wrClass = stats.total_picks === 0 ? "text-slate-500" : (stats.winrate >= 50 ? "text-[#00E676]" : "text-[#FF2E55]");
@@ -177,10 +179,13 @@ export default function ChampionProfile() {
       </div>
 
       <div className="hud-card p-5">
-        <h3 className="font-heading text-lg font-bold uppercase mb-4 flex items-center gap-2">
-          <Flame className="w-4 h-4 text-[#FFB800]" /> Matches
-          <span className="text-xs font-mono-hud text-slate-500 normal-case">{allMatches.length}</span>
-        </h3>
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+          <h3 className="font-heading text-lg font-bold uppercase flex items-center gap-2">
+            <Flame className="w-4 h-4 text-[#FFB800]" /> Matches
+            <span className="text-xs font-mono-hud text-slate-500 normal-case">{allMatches.length}</span>
+          </h3>
+          <FormatFilter value={format} onChange={(f) => { setFormat(f); setShowAll(false); }} small testid="champion-matches-format" />
+        </div>
         {allMatches.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No matches found.</div> : (
           <div className="space-y-2">
             {shown.map((m) => {
@@ -201,6 +206,7 @@ export default function ChampionProfile() {
                     className="w-full flex items-center justify-between gap-3 p-3 text-left">
                     <div className="flex items-center gap-3 flex-wrap min-w-0">
                       <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
+                      <MatchCode match={m} className="hidden sm:inline" />
                       <span className="font-mono-hud text-sm whitespace-nowrap">
                         <span className={won_a ? "text-[#00E676]" : "text-slate-400"}>{m.team_a_rounds}</span>
                         <span className="text-slate-600 mx-2">:</span>

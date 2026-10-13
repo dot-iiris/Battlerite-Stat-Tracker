@@ -23,6 +23,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 from pydantic import BaseModel, Field, EmailStr
 
 
@@ -329,6 +330,10 @@ async def startup():
     await db.screenshots.create_index("sha256")
     _spawn(prune_screenshots())
     _spawn(_backfill_mmr_before())
+    try:
+        await backfill_match_codes()
+    except Exception:
+        logging.getLogger(__name__).exception("Match code backfill failed")
     schedule_leaderboard_push()   # picks up settings changes (e.g. DISCORD_LEADERBOARD_SIZE) on every restart
 
     # Seed admin
@@ -663,6 +668,75 @@ async def ensure_unranked_season() -> dict:
 async def get_active_ranked_season() -> Optional[dict]:
     return await db.seasons.find_one({"active": True, "ranked": {"$ne": False}}, {"_id": 0})
 
+
+# --------- Match codes: S2-3v3-014 = Season 2, a 3v3, the season's 14th match (U-... = unranked) ---------
+MATCH_CODE_RE = re.compile(r"^(S\d+|U)-(1v1|2v2|3v3)-\d{3,}$")
+
+async def season_code(season: dict) -> str:
+    if not is_ranked_season(season):
+        return "U"
+    m = re.match(r"^\s*Season\s+(\d+)", season.get("name") or "", re.IGNORECASE)
+    if m:
+        return f"S{int(m.group(1))}"
+    ids = [x["id"] for x in await db.seasons.find({"ranked": {"$ne": False}}, {"_id": 0, "id": 1})
+           .sort("created_at", 1).to_list(1000)]
+    return f"S{ids.index(season['id']) + 1 if season['id'] in ids else len(ids) + 1}"
+
+async def code_fits(code: Optional[str], season: dict, fmt: str) -> bool:
+    """Is this a new-style code for this season and format?"""
+    return bool(code) and bool(MATCH_CODE_RE.match(code)) and code.startswith(f"{await season_code(season)}-{fmt}-")
+
+async def next_match_code(season: dict, fmt: str) -> str:
+    """Hand out the season's next number (shared by both formats). Never reused, even if the match is cancelled."""
+    c = await db.counters.find_one_and_update({"_id": f"match-code:{season['id']}"}, {"$inc": {"seq": 1}},
+                                              upsert=True, return_document=ReturnDocument.AFTER)
+    return f"{await season_code(season)}-{fmt}-{c['seq']:03d}"
+
+def match_ref_query(key: str) -> dict:
+    """Find a match by its id, its code (any capitalisation) or an old code it used to have (#f94749)."""
+    k = (key or "").strip().lstrip("#")
+    keys = list({k, k.lower(), k.upper().replace("V", "v")})
+    return {"$or": [{"id": k}, {"discord_match_id": {"$in": keys}}, {"legacy_refs": {"$in": keys}}]}
+
+async def backfill_match_codes():
+    """One-off: number every existing match per season in the order they were played.
+    Old codes stay findable (legacy_refs); Discord match log posts are edited to show the new codes."""
+    if await db.counters.find_one({"_id": "match-codes-backfilled"}):
+        return
+    seasons = await db.seasons.find({}, {"_id": 0}).to_list(1000)
+    touched = []
+    for season in seasons:
+        docs = await db.matches.find({"season_id": season["id"]}, {"_id": 1, "id": 1, "format": 1, "discord_match_id": 1}) \
+            .sort([("played_at", 1), ("_id", 1)]).to_list(100000)
+        prefix = await season_code(season)
+        for i, d in enumerate(docs, 1):
+            code = f"{prefix}-{d['format']}-{i:03d}"
+            upd = {"$set": {"discord_match_id": code}}
+            old = d.get("discord_match_id")
+            if old and old != code:
+                upd["$addToSet"] = {"legacy_refs": old}
+            await db.matches.update_one({"_id": d["_id"]}, upd)
+        if docs:
+            await db.counters.update_one({"_id": f"match-code:{season['id']}"}, {"$max": {"seq": len(docs)}}, upsert=True)
+            touched.append(season["id"])
+    await db.counters.insert_one({"_id": "match-codes-backfilled", "at": _now_iso()})
+    for sid in touched:
+        schedule_match_log_resync(sid, "")
+
+
+class ReserveCode(BaseModel):
+    format: Literal["2v2", "3v3"]
+    ranked: bool = True
+
+
+@api_router.post("/matches/reserve-code")
+async def reserve_match_code(data: ReserveCode, user: dict = Depends(admin_or_bot)):
+    """The bot takes a code when a lobby fills, so the players can see it straight away."""
+    season = await get_active_ranked_season() if data.ranked else await ensure_unranked_season()
+    if not season:
+        raise HTTPException(400, "There is no active ranked season")
+    return {"code": await next_match_code(season, data.format), "season_id": season["id"]}
+
 async def check_and_close_expired_seasons():
     """Auto-close active seasons whose end_date has passed. Spawn next season."""
     now = datetime.now(timezone.utc)
@@ -924,7 +998,7 @@ async def create_match(data: MatchCreate, user: dict = Depends(admin_required)):
     return doc
 
 
-async def _insert_match(data: MatchCreate) -> dict:
+async def _insert_match(data: MatchCreate, code: Optional[str] = None) -> dict:
     await check_and_close_expired_seasons()
     # Validate
     team_a = [p for p in data.players if p.team == "A"]
@@ -999,6 +1073,12 @@ async def _insert_match(data: MatchCreate) -> dict:
         "team_b_mmr_before": round(team_b_mmr, 2),
         "bonus_rules": rules,   # this match keeps these even if the settings change later
     }
+    if await code_fits(code, season, data.format):
+        doc["discord_match_id"] = code
+    else:   # no code yet, or one from another season / an old random one
+        doc["discord_match_id"] = await next_match_code(season, data.format)
+        if code:
+            doc["legacy_refs"] = [code]
     await db.matches.insert_one(doc)
     doc.pop("_id", None)
     schedule_leaderboard_push()
@@ -1006,11 +1086,14 @@ async def _insert_match(data: MatchCreate) -> dict:
 
 
 @api_router.get("/matches")
-async def list_matches(season_id: Optional[str] = None, player_id: Optional[str] = None):
+async def list_matches(season_id: Optional[str] = None, player_id: Optional[str] = None,
+                       format: Optional[str] = None):
     q = {}
     q.update(await season_filter(season_id))
     if player_id:
         q["players.player_id"] = player_id
+    if format and format != "all":
+        q["format"] = format
     docs = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
     return docs
 
@@ -1052,7 +1135,16 @@ async def update_match(mid: str, data: MatchCreate, user: dict = Depends(admin_r
             "players": [p.model_dump() for p in data.players]}):
         await reset_ocr_streak()   # an admin corrected a screenshot result
     tracks = {p["player_id"]: p.get("mmr_track") for p in existing["players"]}  # keep merge history
+    new_season = await db.seasons.find_one({"id": data.season_id}, {"_id": 0})
+    if not new_season:
+        raise HTTPException(404, "Season not found")
+    recode = {}
+    if not await code_fits(existing.get("discord_match_id"), new_season, data.format):
+        recode = {"discord_match_id": await next_match_code(new_season, data.format)}
+        if existing.get("discord_match_id"):
+            await db.matches.update_one({"id": mid}, {"$addToSet": {"legacy_refs": existing["discord_match_id"]}})
     await db.matches.update_one({"id": mid}, {"$set": {
+        **recode,
         "season_id": data.season_id,
         "format": data.format,
         "team_a_rounds": data.team_a_rounds,
@@ -2258,11 +2350,10 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
         notes=pm.get("notes", "") if data.notes is None else data.notes,
         played_at=pm["played_at"],
     )
-    match = await _insert_match(match_in)   # posted to the match log below, once MMR is final
+    match = await _insert_match(match_in, code=pm.get("discord_match_id"))   # posted to the match log below, once MMR is final
     await db.matches.update_one({"id": match["id"]}, {"$set": {
         "source": pm.get("source"), "source_ref": pm.get("source_ref"), "map": pm.get("map"),
         "balance_mode": pm.get("balance_mode"), "reported_by": pm.get("reported_by"),
-        "discord_match_id": pm.get("discord_match_id"),
         "confirmed_by": data.confirmed_by if user.get("role") == "bot" else None,
         "completed_by": "players" if user.get("role") == "bot" else (user.get("name") or user.get("email")),
         "pending_match_id": pmid,
@@ -3064,7 +3155,7 @@ async def import_matches(data: ImportMatches, user: dict = Depends(admin_require
     """Insert matches into the season of `before`, in order, just before it; replay the season's
     MMR; post them to the Discord match log and repost `before` and every later match below them."""
     key = data.before.strip().lstrip("#")
-    target = await db.matches.find_one({"$or": [{"id": key}, {"discord_match_id": key}]}, {"_id": 0})
+    target = await db.matches.find_one(match_ref_query(key), {"_id": 0})
     if not target:
         raise HTTPException(404, f"No match {data.before}")
     if not data.matches:
@@ -3359,9 +3450,12 @@ def _csv_response(rows: list, headers: list, filename: str):
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 @app.get("/api/exports/matches.csv")
-async def export_matches_csv(season_id: Optional[str] = None, user: dict = Depends(admin_required)):
+async def export_matches_csv(season_id: Optional[str] = None, format: Optional[str] = None,
+                             user: dict = Depends(admin_required)):
     q = {}
     q.update(await season_filter(season_id))
+    if format and format != "all":
+        q["format"] = format
     matches = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
     players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0}).to_list(1000)}
     seasons = {s["id"]: s["name"] for s in await db.seasons.find({}, {"_id": 0}).to_list(1000)}

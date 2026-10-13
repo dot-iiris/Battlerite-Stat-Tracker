@@ -9,6 +9,7 @@ import ChampionPortrait from "@/components/ChampionPortrait";
 import MmrChange from "@/components/MmrChange";
 import MatchDetails from "@/components/MatchDetails";
 import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
+import FormatFilter, { MatchCode } from "@/components/FormatFilter";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -18,6 +19,7 @@ export default function Matches() {
   const [players, setPlayers] = useState([]);
   const [seasonFilter, setSeasonFilter] = useState(null);   // null until we know the current season
   const [playerFilter, setPlayerFilter] = useState("");
+  const [formatFilter, setFormatFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
   const { user, isAdmin } = useAuth();
@@ -60,9 +62,10 @@ export default function Matches() {
     const params = {};
     if (seasonFilter) params.season_id = seasonFilter;
     if (playerFilter) params.player_id = playerFilter;
+    if (formatFilter !== "all") params.format = formatFilter;
     const m = await api.get("/matches", { params });
     setMatches(m.data);
-  }, [seasonFilter, playerFilter]);
+  }, [seasonFilter, playerFilter, formatFilter]);
 
   useEffect(() => {
     (async () => {
@@ -101,7 +104,7 @@ export default function Matches() {
           </button>
         )}
         {isAdmin && <a
-          href={`${process.env.REACT_APP_BACKEND_URL}/api/exports/matches.csv${seasonFilter ? `?season_id=${seasonFilter}` : ""}`}
+          href={`${process.env.REACT_APP_BACKEND_URL}/api/exports/matches.csv?season_id=${seasonFilter || ""}${formatFilter !== "all" ? `&format=${formatFilter}` : ""}`}
           className="btn-glow bg-cyan-400 hover:bg-cyan-300 text-black font-mono-hud font-bold uppercase tracking-wider text-xs px-4 py-2.5 rounded flex items-center gap-2"
           data-testid="matches-export-csv"
         >
@@ -112,6 +115,7 @@ export default function Matches() {
 
       <div className="hud-card p-4 flex flex-wrap gap-3 items-center">
         <Filter className="w-4 h-4 text-cyan-400" />
+        <FormatFilter value={formatFilter} onChange={setFormatFilter} testid="matches-filter-format" />
         <SeasonSelect seasons={seasons} value={seasonFilter} onChange={setSeasonFilter}
           className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="matches-filter-season" />
         <select value={playerFilter} onChange={(e) => setPlayerFilter(e.target.value)} className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="matches-filter-player">
@@ -120,7 +124,7 @@ export default function Matches() {
         </select>
         <div className="flex items-center gap-2 flex-1 min-w-[200px]">
           <Search className="w-4 h-4 text-cyan-400" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search players, notes or champions..."
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search players, champions, notes or match #..."
             className="flex-1 bg-[#121828] border border-[#1B2438] focus:border-cyan-400 focus:outline-none rounded px-3 py-2 text-sm"
             data-testid="matches-search" />
         </div>
@@ -133,7 +137,8 @@ export default function Matches() {
           {matches.filter((m) => {
             if (m.id === openId) return true;  // keep the linked match visible
             if (!search.trim()) return true;
-            const q = search.trim().toLowerCase();
+            const q = search.trim().toLowerCase().replace(/^#/, "");
+            if ([m.discord_match_id, ...(m.legacy_refs || [])].some((c) => (c || "").toLowerCase().includes(q))) return true;
             if ((m.notes || "").toLowerCase().includes(q)) return true;
             if (m.players.some((p) => p.champion.toLowerCase().includes(q))) return true;
             if (m.players.some((p) => (playerName(p.player_id) || "").toLowerCase().includes(q))) return true;
@@ -150,6 +155,7 @@ export default function Matches() {
                 data-testid={`match-row-${m.id}`}>
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                   <div className="flex items-center gap-3 flex-wrap">
+                    <MatchCode match={m} className="text-xs" />
                     <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
                     <span className="text-[10px] font-mono-hud uppercase text-slate-500">{new Date(m.played_at).toLocaleString()}</span>
                     {m.notes && <span className="text-xs text-slate-400 italic">"{m.notes}"</span>}
