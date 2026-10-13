@@ -153,6 +153,11 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
         {pm.confirmed_by && <span>Confirmed by {pm.confirmed_by}</span>}
         {pm.source_ref && <a href={pm.source_ref} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">Discord message</a>}
       </div>
+      {pm.source === "discord" && (
+        <div className="text-xs text-slate-400">
+          The players are confirming this result in Discord - it logs itself once they do. Logging or discarding it here overrides them.
+        </div>
+      )}
       <div className="flex flex-wrap items-start gap-4">
         {shotUrl ? (
           <a href={shotUrl} target="_blank" rel="noreferrer" className="block w-full sm:w-80 shrink-0" title="Open full size">
@@ -244,7 +249,7 @@ export default function Pending() {
       <div>
         <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Discord Inbox</div>
         <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Pending</h1>
-        <p className="text-sm text-slate-400 mt-2">Matches reported from Discord wait here until an admin checks them. Screenshots are read automatically — check every value before logging. Stats come from the scoreboard's Average Total tab.</p>
+        <p className="text-sm text-slate-400 mt-2">Matches reported from Discord wait here while the players confirm them in Discord (or until an admin logs them here). Screenshots are read automatically — check every value before logging. Stats come from the scoreboard's Average Total tab.</p>
       </div>
 
       <section className="space-y-3">

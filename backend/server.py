@@ -2052,6 +2052,7 @@ class PendingMatchComplete(BaseModel):
     team_b_rounds: Optional[int] = None
     season_id: Optional[str] = None
     notes: Optional[str] = None
+    confirmed_by: Optional[str] = None   # set by the bot when the players confirmed the result
 
 
 @api_router.post("/pending-matches")
@@ -2122,7 +2123,8 @@ async def get_pending_match(pmid: str, user: dict = Depends(admin_or_bot)):
 
 
 @api_router.post("/pending-matches/{pmid}/complete")
-async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: dict = Depends(admin_required)):
+async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: dict = Depends(admin_or_bot)):
+    """Log a reported match: an admin on the Pending page, or the bot once the players confirmed it."""
     pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
     if not pm:
         raise HTTPException(404, "Pending match not found")
@@ -2164,6 +2166,8 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
         "source": pm.get("source"), "source_ref": pm.get("source_ref"), "map": pm.get("map"),
         "balance_mode": pm.get("balance_mode"), "reported_by": pm.get("reported_by"),
         "discord_match_id": pm.get("discord_match_id"),
+        "confirmed_by": data.confirmed_by if user.get("role") == "bot" else None,
+        "completed_by": "players" if user.get("role") == "bot" else (user.get("name") or user.get("email")),
         "pending_match_id": pmid,
         "screenshot_id": pmid if pm.get("screenshot") else None,
     }})
@@ -2550,7 +2554,8 @@ async def match_log_payload(m: dict) -> dict:
         "timestamp": m.get("played_at") or _now_iso(),
     }
     foot = (["MMR change → MMR after the match", "avg = team MMR before"] if ranked else []) \
-        + ([f"submitted by {m['reported_by']}"] if m.get("reported_by") else [])
+        + ([f"submitted by {m['reported_by']}"] if m.get("reported_by") else []) \
+        + ([f"confirmed by {m['confirmed_by']}"] if m.get("confirmed_by") else [])
     if foot:
         embed["footer"] = {"text": " · ".join(foot)}
     if PUBLIC_SITE_URL:
