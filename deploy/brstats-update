@@ -50,7 +50,9 @@ if [ -z "$(swapon --show 2>/dev/null)" ] && [ ! -f /swapfile ]; then
   fi
 fi
 
-tree() { git -C "$SITE" rev-parse "HEAD:$1" 2>/dev/null || echo none; }
+# which version of a folder is checked out. Asked as the site's own user: git refuses to read a
+# repository owned by someone else ("dubious ownership"), which made every update look unchanged.
+tree() { as_app git -C "$SITE" rev-parse "HEAD:$1" 2>/dev/null || echo "unknown-$(date +%s)"; }
 
 # swap a finished build in, so the site never shows a half-built page
 install_build() {
