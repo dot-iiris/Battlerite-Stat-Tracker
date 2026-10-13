@@ -3108,7 +3108,12 @@ async def post_match_log(mid: str):
         await _post_match_log(mid)
 
 
-async def _post_match_log(mid: str):
+SUPPRESS_NOTIFICATIONS = 1 << 12   # Discord's "@silent" message flag
+
+
+async def _post_match_log(mid: str, silent: bool = False):
+    """silent: bulk jobs (posting old matches, reposting after an import) post without pinging anyone.
+    Edits never ping, so re-syncs and code changes are always quiet."""
     m = await db.matches.find_one({"id": mid}, {"_id": 0})
     if not m or not MATCH_LOG_WEBHOOK:
         return
@@ -3122,6 +3127,8 @@ async def _post_match_log(mid: str):
         if status >= 300:
             logging.getLogger(__name__).warning("Match log edit returned %s", status)
         return  # if someone deleted the post in Discord, leave it deleted
+    if silent:
+        payload["flags"] = SUPPRESS_NOTIFICATIONS   # only allowed on new posts, not edits
     status, msg = await _webhook_retry("POST", f"{MATCH_LOG_WEBHOOK}?wait=true", payload)
     if status < 300 and msg:
         await db.matches.update_one({"id": mid}, {"$set": {
@@ -3136,7 +3143,7 @@ async def _backfill_match_log(ids: list):
     try:
         async with _match_log_lock:   # new matches logged meanwhile wait, then post after these
             for mid in ids:
-                await _post_match_log(mid)
+                await _post_match_log(mid, silent=True)
                 await asyncio.sleep(1)   # stay well under Discord's webhook rate limit
     finally:
         _backfill_running = False
