@@ -1774,6 +1774,13 @@ async def _check_link_conflicts(discord_id: str, player: dict):
         raise HTTPException(409, f"This Discord account is already linked to {other['name']}")
 
 
+@api_router.get("/players/linked-discord")
+async def linked_discord_accounts(user: dict = Depends(admin_or_bot)):
+    """Discord ids of every linked player (for the bot's linked-player role)."""
+    docs = await db.players.find({"discord_id": {"$nin": [None, ""]}}, {"_id": 0, "id": 1, "name": 1, "discord_id": 1}).to_list(10000)
+    return [{"player_id": d["id"], "name": d["name"], "discord_id": str(d["discord_id"])} for d in docs]
+
+
 @api_router.get("/players/by-discord/{discord_id}")
 async def player_by_discord(discord_id: str, user: dict = Depends(admin_or_bot)):
     p = await db.players.find_one({"discord_id": discord_id}, {"_id": 0})
