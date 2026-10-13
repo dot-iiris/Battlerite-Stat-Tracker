@@ -74,6 +74,12 @@ export default function OcrAccuracy() {
               <span className="text-slate-500"> At 5 the Discord bot stops offering players corrections; any correction (yours included) starts it again.</span>
             </div>
           )}
+          {data.storage && (
+            <div className="text-xs text-slate-400">
+              Screenshots stored: <span className="font-mono-hud text-cyan-400">{data.storage.used_mb} MB</span> of {data.storage.limit_mb} MB ({data.storage.count}).
+              <span className="text-slate-500"> Oldest are deleted first once it's full; the champion portraits and accuracy data learned from them are kept.</span>
+            </div>
+          )}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <Table rows={data.fields.filter((f) => f.correct + f.wrong + f.missed > 0)} first="field" firstLabel="Field" />
             <Table rows={data.resolutions} first="resolution" firstLabel="Resolution" />

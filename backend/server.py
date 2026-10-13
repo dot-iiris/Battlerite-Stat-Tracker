@@ -6,6 +6,7 @@ sys.path.insert(0, str(ROOT_DIR))  # so scoreboard.py imports wherever uvicorn i
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import hashlib
 import hmac
 import logging
 import uuid
@@ -299,6 +300,8 @@ async def startup():
     await db.screenshots.create_index("id", unique=True)
     await db.champion_icons.create_index("champion")
     await db.ocr_feedback.create_index("created_at")
+    await db.screenshots.create_index("sha256")
+    _spawn(prune_screenshots())
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -2260,6 +2263,7 @@ async def _learn_icons(pm: dict, confirmed: dict):
         await db.champion_icons.insert_one({"id": str(uuid.uuid4()), "champion": champ, "png": png,
                                             "pending_match_id": pm["id"], "player_id": pid,
                                             "created_at": _now_iso()})
+    await db.pending_matches.update_one({"id": pm["id"]}, {"$set": {"icons_learned": True}})
     _icon_refs = None  # reload next time
 
 
@@ -2311,14 +2315,100 @@ async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), upl
     data = await file.read()
     if len(data) > MAX_SCREENSHOT_BYTES:
         raise HTTPException(400, "Screenshot is too big (max 12 MB)")
+    sha = hashlib.sha256(data).hexdigest()
+    other = await db.screenshots.find_one({"sha256": sha, "id": {"$ne": pmid}}, {"_id": 0, "id": 1})
+    if other:
+        used = await db.pending_matches.find_one({"id": other["id"]}, {"_id": 0}) or {}
+        if used.get("status") in ("pending", "completed"):
+            label = f"match #{used['discord_match_id']}" if used.get("discord_match_id") else "another match"
+            raise HTTPException(409, f"This exact screenshot was already submitted for {label}")
     meta = {"file": f"{pmid}{ext}", "uploaded_at": _now_iso(),
             "uploaded_by": uploaded_by or user.get("name") or user.get("email")}
     await db.screenshots.replace_one({"id": pmid}, {
-        "id": pmid, "data": data, "content_type": types[ext], "size": len(data), **meta,
+        "id": pmid, "data": data, "content_type": types[ext], "size": len(data), "sha256": sha, **meta,
     }, upsert=True)
     await db.pending_matches.update_one({"id": pmid}, {"$set": {"screenshot": meta}})
     pm["screenshot"] = meta
-    return await _parse_into_pending(pm)
+    out = await _parse_into_pending(pm)
+    _spawn(prune_screenshots())
+    return out
+
+
+# --------- Screenshot storage limit ---------
+# Screenshots are kept under SCREENSHOT_STORAGE_MB, oldest deleted first. What was learned from
+# one stays: the champion portraits it taught the reader (champion_icons), how accurate the read
+# was (ocr_feedback) and the text it read (on the pending match). Screenshots of results still
+# being confirmed are never deleted.
+SCREENSHOT_STORAGE_MB = float(os.environ.get("SCREENSHOT_STORAGE_MB") or 1024)
+_prune_lock = asyncio.Lock()
+
+
+async def screenshot_storage() -> dict:
+    rows = await db.screenshots.aggregate([{"$group": {"_id": None, "bytes": {"$sum": "$size"}, "n": {"$sum": 1}}}]).to_list(1)
+    used = rows[0]["bytes"] if rows else 0
+    return {"count": rows[0]["n"] if rows else 0, "used_mb": round(used / 1048576, 1), "limit_mb": SCREENSHOT_STORAGE_MB}
+
+
+async def _drop_screenshot(sid: str, why: str):
+    await db.screenshots.delete_one({"id": sid})
+    await db.matches.update_many({"screenshot_id": sid}, {"$set": {"screenshot_id": None, "screenshot_removed": why}})
+    await db.pending_matches.update_one({"id": sid}, {"$set": {"screenshot.removed": why}})
+
+
+async def _keep_learning(pm: dict):
+    """Learn this screenshot's champion portraits before it's deleted, if that never happened."""
+    if pm.get("icons_learned") or not pm.get("match_id") or not pm.get("prefill"):
+        return
+    m = await db.matches.find_one({"id": pm["match_id"]}, {"_id": 0, "players": 1})
+    if m:
+        try:
+            await _learn_icons(pm, {p["player_id"]: p["champion"] for p in m["players"]})
+        except Exception:
+            logging.getLogger(__name__).exception("Couldn't learn icons before deleting a screenshot")
+
+
+async def prune_screenshots():
+    """Remove duplicate and unused screenshots, then the oldest ones while over the limit."""
+    async with _prune_lock:
+        shots = await db.screenshots.find({}, {"_id": 0, "data": 0}).sort("uploaded_at", 1).to_list(100000)
+        for s in shots:   # screenshots from before hashes were kept
+            if not s.get("sha256"):
+                full = await db.screenshots.find_one({"id": s["id"]}, {"_id": 0, "data": 1})
+                s["sha256"] = hashlib.sha256(bytes(full["data"])).hexdigest()
+                await db.screenshots.update_one({"id": s["id"]}, {"$set": {"sha256": s["sha256"]}})
+        pendings = {p["id"]: p for p in await db.pending_matches.find(
+            {"id": {"$in": [s["id"] for s in shots]}}, {"_id": 0, "ocr": 0}).to_list(100000)}
+        used_by = {}
+        for m in await db.matches.find({"screenshot_id": {"$ne": None}}, {"_id": 0, "id": 1, "screenshot_id": 1}).to_list(100000):
+            used_by.setdefault(m["screenshot_id"], []).append(m["id"])
+        keep, first = [], {}
+        for s in shots:
+            pm = pendings.get(s["id"]) or {}
+            if pm.get("status") == "pending":
+                keep.append(s)          # still being confirmed - never touched
+                continue
+            if s["id"] not in used_by:  # discarded, or its match was deleted
+                await _drop_screenshot(s["id"], "unused")
+                continue
+            if s["sha256"] in first:    # same image as an older one: point the match at that copy
+                await _keep_learning(pm)
+                await db.matches.update_many({"screenshot_id": s["id"]}, {"$set": {"screenshot_id": first[s["sha256"]]}})
+                await db.screenshots.delete_one({"id": s["id"]})
+                await db.pending_matches.update_one({"id": s["id"]}, {"$set": {"screenshot.removed": "duplicate"}})
+                continue
+            first[s["sha256"]] = s["id"]
+            keep.append(s)
+        limit = SCREENSHOT_STORAGE_MB * 1048576
+        total = sum(s.get("size") or 0 for s in keep)
+        for s in keep:                  # oldest first
+            if total <= limit:
+                break
+            pm = pendings.get(s["id"]) or {}
+            if pm.get("status") == "pending":
+                continue
+            await _keep_learning(pm)
+            await _drop_screenshot(s["id"], "storage limit")
+            total -= s.get("size") or 0
 
 
 @api_router.post("/pending-matches/{pmid}/reparse")
@@ -2784,6 +2874,7 @@ async def ocr_accuracy(user: dict = Depends(admin_required)):
         "resolutions": [{"resolution": r, **c, "accuracy": rate(c)} for r, c in sorted(by_res.items())],
         "recent_corrections": corrections,
         "streak": await ocr_streak(),
+        "storage": await screenshot_storage(),
     }
 
 
