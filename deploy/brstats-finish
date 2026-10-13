@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # BR Stats - install your settings, bot and data, then start everything.
 # Usage: sudo brstats-finish /tmp/brstats-upload.zip [--replace-db]
-# The zip is made by deploy-bot-and-settings.bat on your PC and contains:
-#   backend.env        the website's live settings (secrets)
-#   bot/               the Discord bot, with its .env
-#   db.jsonl.gz        a copy of your database (optional)
+# The zip comes from your PC and holds any of:
+#   backend.env        the website's live settings (secrets)    - from deploy-website.bat, when they changed
+#   bot/               the Discord bot, with its .env            - from deploy-bot.bat
+#   db.jsonl.gz        a copy of your database                   - deploy-bot.bat -WithDb (moving the site)
+# Only what's in the zip is replaced; the website / bot restart only when their part changed.
 set -euo pipefail
 [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 APP=/opt/brstats
@@ -40,8 +41,9 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 PY
 
 OLD_ENV=$(sha256sum "$APP/backend.env" 2>/dev/null | cut -c1-16 || true)
+RESTART_API=0
+if [ -f "$tmp/backend.env" ]; then
 log "Website settings"
-[ -f "$tmp/backend.env" ] || { echo "backend.env missing from the zip"; exit 1; }
 # this server's own database, whatever the PC used
 grep -vE '^\s*(MONGO_URL|DB_NAME)\s*=' "$tmp/backend.env" > "$tmp/backend.env.clean" || true
 db_name=$(grep -E '^\s*DB_NAME\s*=' "$tmp/backend.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r')
@@ -49,8 +51,12 @@ db_name=$(grep -E '^\s*DB_NAME\s*=' "$tmp/backend.env" | tail -1 | cut -d= -f2- 
   | tr -d '\r' > "$APP/backend.env"
 chown brstats:brstats "$APP/backend.env"
 chmod 600 "$APP/backend.env"
-RESTART_API=0
 [ "$(sha256sum "$APP/backend.env" | cut -c1-16)" != "$OLD_ENV" ] && RESTART_API=1
+elif [ ! -f "$APP/backend.env" ]; then
+  echo "The server has no website settings yet - run deploy-website.bat on your PC first."; exit 1
+else
+  log "Website settings not in this upload - left as they are"
+fi
 
 if [ -d "$tmp/bot" ]; then
   log "Discord bot"
@@ -96,7 +102,8 @@ done
 curl -fs http://127.0.0.1:9101/api/seasons >/dev/null && log "API is answering" \
   || { echo "API isn't answering - see: journalctl -u brstats-api -n 50"; exit 1; }
 
-if [ -f "$APP/bot/bot.py" ]; then
+# the bot restarts only when it was just uploaded (or isn't running)
+if [ -f "$APP/bot/bot.py" ] && { [ -d "$tmp/bot" ] || ! systemctl is-active --quiet brstats-bot; }; then
   systemctl enable --now brstats-bot
   systemctl restart brstats-bot
   log "Bot started"

@@ -27,4 +27,4 @@ yarn-error.log*
 
 # Local tools that hold server details
 admin-tunnel.bat
-deploy-bot-and-settings.ps1
+deploy-bot.ps1
