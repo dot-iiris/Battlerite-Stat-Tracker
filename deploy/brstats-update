@@ -120,7 +120,7 @@ if [ -f "$APP/bot/requirements.txt" ]; then
 fi
 
 # the website backend picks up new code; the bot isn't touched (its code and
-# settings only change through deploy-bot-and-settings / brstats-finish)
+# settings only change through deploy-website / deploy-bot / brstats-finish)
 BACK="$(tree backend)$REQ"
 if systemctl is-enabled --quiet brstats-api 2>/dev/null; then
   if changed backend "$BACK"; then

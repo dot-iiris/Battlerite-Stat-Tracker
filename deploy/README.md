@@ -8,9 +8,11 @@
    lists → Default → Add ingress rules: source `0.0.0.0/0`, TCP, destination ports `80,443`.
    (The server's own firewall is opened by the setup script.)
 3. **DNS**: point your domain (e.g. `stats.example.com`, A record) at the instance's public IP.
-4. **Upload settings, bot and data** from the PC: `deploy-bot-and-settings.bat`. It copies
-   `backend/.env.live`, the bot and a copy of the database, then runs `brstats-finish`
-   on the server, which starts everything and gets the HTTPS certificate.
+4. **Upload the website and its settings** from the PC: `deploy-website.bat`. It sends
+   `backend/.env.live` (whenever it has changed) and runs `brstats-finish` on the server,
+   which starts the website and gets the HTTPS certificate.
+5. **Upload the bot**: `deploy-bot.bat` sends the bot and its `.env.live`
+   (add `-WithDb` to also copy the PC's database when moving an existing site).
 
 ## Day to day
 - Update to the latest code: `ssh ubuntu@<ip>` then `sudo brstats-update`
