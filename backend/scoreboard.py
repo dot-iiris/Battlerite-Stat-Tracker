@@ -142,24 +142,32 @@ def _count_orbs(img, timer_x: Optional[float]) -> Dict[str, int]:
     }
     min_d, max_d = w * 0.006, w * 0.03
     centre = (timer_x - x_lo) if timer_x else (x_hi - x_lo) / 2
-    counts = {}
+    cands = []   # (colour, x, y, diameter) of every round-ish blob on the correct side
     for colour, rs in ranges.items():
         mask = None
         for lo, hi in rs:
             m = cv2.inRange(hsv, np.array(lo), np.array(hi))
             mask = m if mask is None else cv2.bitwise_or(mask, m)
         n, _, stats, cents = cv2.connectedComponentsWithStats(mask)
-        found = 0
         for i in range(1, n):
             bw, bh, area = stats[i][2], stats[i][3], stats[i][4]
             if not (min_d <= bw <= max_d and min_d <= bh <= max_d):
                 continue
-            if not 0.6 <= bw / bh <= 1.6 or area < 0.35 * bw * bh:
+            # round: about as wide as tall and not a filled rectangle (health-bar segments are)
+            if not 0.75 <= bw / bh <= 1.33 or not 0.35 * bw * bh <= area <= 0.92 * bw * bh:
                 continue
-            cx = cents[i][0]
+            cx, cy = cents[i]
             if (colour == "blue" and cx < centre) or (colour == "red" and cx > centre):
-                found += 1
-        counts[colour] = found
+                cands.append((colour, cx, cy, (bw + bh) / 2))
+    # the orbs are the biggest round blobs, all the same size and on one line
+    counts = {"blue": 0, "red": 0}
+    if cands:
+        d = max(c[3] for c in cands)
+        orbs = [c for c in cands if c[3] >= 0.7 * d]
+        line_y = sorted(c[2] for c in orbs)[len(orbs) // 2]
+        for colour, _, cy, _ in orbs:
+            if abs(cy - line_y) <= 0.4 * d:
+                counts[colour] += 1
     return counts
 
 
