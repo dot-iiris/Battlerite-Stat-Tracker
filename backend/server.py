@@ -3008,6 +3008,83 @@ async def _resync_match_log(season_id: str, from_played_at: str):
             await asyncio.sleep(0.5)
 
 
+# --------- Import matches played elsewhere (e.g. on a test copy of the site) ---------
+class ImportedPlayer(BaseModel):
+    player_id: str          # a live player id
+    champion: str
+    team: Literal["A", "B"]
+    stats: Optional[PlayerStats] = None
+
+class ImportedMatch(BaseModel):
+    format: Literal["1v1", "2v2", "3v3"]
+    team_a_rounds: int
+    team_b_rounds: int
+    players: List[ImportedPlayer]
+    notes: Optional[str] = ""
+    map: Optional[str] = None
+    balance_mode: Optional[str] = None
+
+class ImportMatches(BaseModel):
+    before: str                       # the live match they go just before: its id or Discord number (#f94749)
+    matches: List[ImportedMatch]      # oldest first
+    dry_run: bool = False
+
+
+@api_router.post("/admin/import-matches")
+async def import_matches(data: ImportMatches, user: dict = Depends(admin_required)):
+    """Insert matches into the season of `before`, in order, just before it; replay the season's
+    MMR; post them to the Discord match log and repost `before` and every later match below them."""
+    key = data.before.strip().lstrip("#")
+    target = await db.matches.find_one({"$or": [{"id": key}, {"discord_match_id": key}]}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, f"No match {data.before}")
+    if not data.matches:
+        raise HTTPException(400, "Nothing to import")
+    sid = target["season_id"]
+    prev = await db.matches.find({"season_id": sid, "played_at": {"$lt": target["played_at"]}}, {"_id": 0, "played_at": 1}) \
+        .sort("played_at", -1).to_list(1)
+    def when(v: str) -> datetime:
+        d = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    t_end = when(target["played_at"])
+    t_start = when(prev[0]["played_at"]) if prev else t_end - timedelta(minutes=10 * (len(data.matches) + 1))
+    n = len(data.matches)
+    times = [(t_start + (t_end - t_start) * (i + 1) / (n + 1)).isoformat() for i in range(n)]
+    problems = []
+    for i, im in enumerate(data.matches):
+        for p in im.players:
+            if p.champion not in CHAMPION_ROLES:
+                problems.append(f"match {i + 1}: unknown champion '{p.champion}'")
+            if not await db.players.find_one({"id": p.player_id}, {"_id": 1}):
+                problems.append(f"match {i + 1}: unknown player {p.player_id}")
+    if problems:
+        raise HTTPException(400, "; ".join(problems))
+    later = await db.matches.find({"season_id": sid, "played_at": {"$gte": target["played_at"]}}, {"_id": 0}) \
+        .sort("played_at", 1).to_list(100000)
+    if data.dry_run:
+        return {"season_id": sid, "before": target["id"], "played_at": times,
+                "reposted": [m.get("discord_match_id") or m["id"] for m in later]}
+    new_ids = []
+    for im, at in zip(data.matches, times):
+        mc = MatchCreate(season_id=sid, format=im.format, team_a_rounds=im.team_a_rounds, team_b_rounds=im.team_b_rounds,
+                         notes=im.notes or "", played_at=at,
+                         players=[MatchPlayerInput(player_id=p.player_id, champion=p.champion, role=CHAMPION_ROLES[p.champion],
+                                                   team=p.team, stats=p.stats) for p in im.players])
+        doc = await _insert_match(mc)
+        await db.matches.update_one({"id": doc["id"]}, {"$set": {
+            "source": "import", "map": im.map, "balance_mode": im.balance_mode}})
+        new_ids.append(doc["id"])
+    await recompute_season_elo(sid)
+    if MATCH_LOG_WEBHOOK:
+        # take the later posts down now; they go back up below the imported matches
+        for m in later:
+            if m.get("discord_log"):
+                await remove_match_log(m)
+                await db.matches.update_one({"id": m["id"]}, {"$unset": {"discord_log": ""}})
+        _spawn(_backfill_match_log(new_ids + [m["id"] for m in later]))
+    return {"imported": new_ids, "played_at": times, "reposted": [m.get("discord_match_id") or m["id"] for m in later]}
+
+
 async def remove_match_log(m: dict):
     log_ref = m.get("discord_log") or {}
     if log_ref.get("message_id") and log_ref.get("webhook"):
