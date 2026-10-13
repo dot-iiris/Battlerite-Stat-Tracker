@@ -40,7 +40,27 @@ NGX
   if nginx -t 2>/dev/null; then systemctl reload nginx; log "Turned on compression"; else rm -f /etc/nginx/conf.d/brstats-gzip.conf; fi
 fi
 
+# a little swap, so a build on the server can't run it out of memory
+if [ -z "$(swapon --show 2>/dev/null)" ] && [ ! -f /swapfile ]; then
+  if fallocate -l 2G /swapfile 2>/dev/null && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile; then
+    grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    log "Added 2 GB of swap"
+  else
+    rm -f /swapfile
+  fi
+fi
+
 tree() { git -C "$SITE" rev-parse "HEAD:$1" 2>/dev/null || echo none; }
+
+# swap a finished build in, so the site never shows a half-built page
+install_build() {
+  [ -f "$1/index.html" ] || return 1
+  chown -R brstats:brstats "$1"
+  rm -rf "$SITE/frontend/build.old"
+  [ -d "$SITE/frontend/build" ] && mv "$SITE/frontend/build" "$SITE/frontend/build.old"
+  mv "$1" "$SITE/frontend/build"
+  rm -rf "$SITE/frontend/build.old"
+}
 
 REQ=$(sha256sum "$SITE/deploy/requirements-server.txt" | cut -c1-16)
 if [ ! -x "$APP/venv/bin/python" ] || changed backend-req "$REQ"; then
@@ -52,8 +72,19 @@ if [ ! -x "$APP/venv/bin/python" ] || changed backend-req "$REQ"; then
 fi
 
 FRONT=$(tree frontend)
+PREBUILT=/tmp/brstats-web-$FRONT.tgz   # built on your PC by update-oracle.bat
+if [ -f "$PREBUILT" ] && { [ ! -f "$SITE/frontend/build/index.html" ] || changed frontend "$FRONT"; }; then
+  log "Installing the website build from your PC"
+  rm -rf "$SITE/frontend/build.new"; mkdir -p "$SITE/frontend/build.new"
+  if tar -xzf "$PREBUILT" -C "$SITE/frontend/build.new" && install_build "$SITE/frontend/build.new"; then
+    done_with frontend "$FRONT"
+  else
+    rm -rf "$SITE/frontend/build.new"; echo "    That build was incomplete - building here instead"
+  fi
+fi
+rm -f /tmp/brstats-web-*.tgz
 if [ ! -f "$SITE/frontend/build/index.html" ] || changed frontend "$FRONT"; then
-  log "Building the website"
+  log "Building the website on the server (the live site keeps running; this takes a while)"
   as_app tee "$SITE/frontend/.env.production.local" >/dev/null <<'EOF2'
 REACT_APP_BACKEND_URL=
 DISABLE_EMERGENT_OVERLAY=true
@@ -63,19 +94,17 @@ EOF2
   cd "$SITE/frontend"
   LOCK=$(sha256sum yarn.lock | cut -c1-16)
   if [ ! -d node_modules ] || changed frontend-lock "$LOCK"; then
-    as_app npx --yes yarn@1.22.22 install --network-timeout 600000
+    as_app nice -n 19 npx --yes yarn@1.22.22 install --network-timeout 600000
     done_with frontend-lock "$LOCK"
   fi
-  # build next to the live site, then swap it in, so the site never goes down mid-build
-  rm -rf build.new build.old
-  as_app env BUILD_PATH=build.new npx --yes yarn@1.22.22 build
-  [ -f build.new/index.html ] || { echo "Build failed - the site was left as it was"; exit 1; }
-  [ -d build ] && mv build build.old
-  mv build.new build
-  rm -rf build.old
+  # lowest CPU/disk priority and capped memory, so the API and database stay responsive meanwhile
+  rm -rf build.new
+  as_app env BUILD_PATH=build.new NODE_OPTIONS=--max-old-space-size=1536 \
+    nice -n 19 ionice -c 3 npx --yes yarn@1.22.22 build
+  install_build "$SITE/frontend/build.new" || { echo "Build failed - the site was left as it was"; exit 1; }
   done_with frontend "$FRONT"
 else
-  log "Website unchanged - not rebuilding"
+  log "Website up to date"
 fi
 
 if [ -f "$APP/bot/requirements.txt" ]; then
