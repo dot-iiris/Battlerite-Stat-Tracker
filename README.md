@@ -1,64 +1,71 @@
 # BR Stats
 
-A ranked stats site for a small Battlerite OCE pick-up group. Admins log each
-match (teams, champions, round score, and the scoreboard if there's a
-screenshot) and the site works out MMR per season, leaderboards, player and
-champion pages, the PvP and champion matrices, team balancing for the next
-game, and a weekly recap. The live copy is at https://br.iarhm.xyz.
+BR Stats is a ranked statistics site for a small Battlerite OCE pick-up group.
+Administrators log each match, recording the teams, champions and round score,
+along with the scoreboard figures when a screenshot is available. From these
+records the site calculates seasonal MMR and produces leaderboards, player and
+champion pages, PvP and champion matrices, balanced teams for upcoming games,
+and a weekly recap. The live deployment is hosted at https://br.iarhm.xyz.
 
-This is a fork of MagicMan-CT's
+The project is a fork of MagicMan-CT's
 [Battlerite-Stat-Tracker](https://github.com/MagicMan-CT/Battlerite-Stat-Tracker),
-which was first built with the Emergent app builder. I've kept working on it by
-hand since then: rebranding, scoreboard screenshot reading, Discord login and
-webhooks, season and MMR settings, admin tools and self-hosting scripts, among
-other things. Most of that was built hand in hand with a Discord bot that runs
-the group's pick-up lobbies, so the two were developed together.
+which was originally generated with the Emergent app builder. Development has
+since continued by hand, adding a new brand, scoreboard screenshot reading,
+Discord login and webhooks, season and MMR settings, administrative tools and
+self-hosting scripts, among other changes. Much of this work was carried out
+alongside a Discord bot that runs the group's pick-up lobbies, and the two were
+developed in parallel.
 
 ## Branches
 
-main is the website on its own. I've tried to take every bot endpoint out of
-it (bot authentication, matches reported from Discord, link requests made
-through the bot) while keeping all the website features, so it can be run
-without the bot.
+The main branch contains the website on its own. The bot's endpoints, namely
+bot authentication, matches reported from Discord and link requests made
+through the bot, have been removed from it while the website features remain,
+so that the site can be run without the bot.
 
-bot-integration is the same site plus the API the bot talks to. Site-only
-changes are made on one branch and cherry-picked to the other. The bot itself
-is in its own repo: https://github.com/dot-iiris/br-stats-bot
+The bot-integration branch contains the same site together with the API that
+the bot relies on. Changes that concern only the website are made on one
+branch and cherry-picked to the other. The bot is maintained in a separate
+repository: https://github.com/dot-iiris/br-stats-bot
 
-## Running it locally
+## Running locally
 
-You need Python 3.10 or newer, Node with Yarn 1, and MongoDB.
+The project requires Python 3.10 or newer, Node with Yarn 1, and MongoDB.
 
-Backend, from backend/ (on Windows it's .venv\Scripts\ instead of .venv/bin/):
+The backend is run from backend/ (on Windows, .venv\Scripts\ replaces
+.venv/bin/):
 
     python -m venv .venv
     .venv/bin/pip install -r requirements.txt
     cp .env.example .env
     .venv/bin/python -m uvicorn server:app --port 8001 --reload
 
-Fill in .env before starting it. The admin account in .env (ADMIN_EMAIL /
-ADMIN_PASSWORD) is created the first time the backend starts. Discord login and
-the Discord webhooks are optional; leave those settings empty to go without
-them.
+The .env file should be completed before the backend is started. The
+administrator account it defines (ADMIN_EMAIL and ADMIN_PASSWORD) is created
+on the first start. Discord login and the Discord webhooks are optional and
+are disabled when their settings are left empty.
 
-Frontend, from frontend/:
+The frontend is run from frontend/:
 
     yarn install
     echo REACT_APP_BACKEND_URL=http://localhost:8001 > .env.development.local
     yarn start
 
-The site opens on http://localhost:3000.
+The site is then available at http://localhost:3000.
 
-scripts/seed_demo.py fills an empty database with made-up players and matches
-for testing. It logs in as admin@arenaops.gg / admin123, so use those in your
-local .env if you want to run it.
+The script scripts/seed_demo.py populates an empty database with fictitious
+players and matches for testing. It signs in as admin@arenaops.gg with the
+password admin123, so those credentials must be set in the local .env for it
+to run.
 
-Screenshot reading uses RapidOCR and OpenCV on the server, with no outside
-service. It reads the in-game scoreboard's Average Total tab.
+Screenshot reading is performed on the server with RapidOCR and OpenCV and
+does not depend on any external service. It reads the Average Total tab of the
+in-game scoreboard.
 
 ## Hosting
 
-deploy/ has the scripts I use to run it on an Oracle Cloud free-tier Ubuntu
-server behind nginx, with HTTPS from Let's Encrypt. deploy/README.md covers
-setting one up. It's written around my own server and domain, so expect to
-change a few names.
+The deploy/ directory contains scripts for running the site on an Oracle Cloud
+free-tier Ubuntu server behind nginx, with HTTPS certificates from Let's
+Encrypt. Setup is described in deploy/README.md. The scripts are written for a
+particular server and domain, so some names will need to be changed for other
+deployments.
