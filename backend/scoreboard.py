@@ -29,7 +29,8 @@ def _get_ocr():
     global _ocr
     if _ocr is None:
         from rapidocr import RapidOCR  # optional dependency, loaded on first use
-        _ocr = RapidOCR(params={"Global.log_level": "error"})
+        # no upside-down check: scoreboards are never upside down, and the check flipped "99" into "66"
+        _ocr = RapidOCR(params={"Global.log_level": "error", "Global.use_cls": False})
     return _ocr
 
 
@@ -68,14 +69,18 @@ def _int(text: str) -> Optional[int]:
 
 
 # ------------------------------------------------------------------ OCR
-def _tokens(img, f: float) -> List[dict]:
-    """OCR the centre of the screen (where the scoreboard is) at zoom f.
+def _tokens(img, f: float, whole: bool = False) -> List[dict]:
+    """OCR the centre of the screen (where the scoreboard is) at zoom f - or, with whole=True,
+    the entire image (for screenshots cropped close around the scoreboard).
     Coordinates are mapped back to the full image."""
     import cv2
 
     h, w = img.shape[:2]
-    x0, y0 = int(w * 0.18), int(h * 0.12)
-    crop = img[y0:int(h * 0.88), x0:int(w * 0.82)]
+    if whole:
+        x0, y0, crop = 0, 0, img
+    else:
+        x0, y0 = int(w * 0.18), int(h * 0.12)
+        crop = img[y0:int(h * 0.88), x0:int(w * 0.82)]
     if f != 1.0:
         crop = cv2.resize(crop, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
     out = []
@@ -240,8 +245,15 @@ def _columns(toks: List[dict], hdr: dict, h: int) -> Dict[str, float]:
     return cols
 
 
+# On a full-screen screenshot the "Your Team" and "Enemy Team" headings are this fraction of the
+# screen height apart (the same at 720p, 1080p and 1440p). Distances below are fractions of the
+# screen height, so for a cropped screenshot the "screen height" is worked out from that gap.
+TEAM_GAP_OF_SCREEN = 0.157
+
+
 def _parse_pass(img, toks: List[dict], champion_names: List[str]) -> dict:
-    h, w = img.shape[:2]
+    img_h, w = img.shape[:2]
+    h = img_h
 
     def find(label: str) -> Optional[dict]:
         cands = [t for t in toks if _norm(t["text"]) == _norm(label)]
@@ -250,8 +262,10 @@ def _parse_pass(img, toks: List[dict], champion_names: List[str]) -> dict:
     your_hdr, enemy_hdr = find("Your Team"), find("Enemy Team")
     if not your_hdr or not enemy_hdr:
         return {"your_team": [], "enemy_team": [], "average_tab": False}
+    if enemy_hdr["y"] > your_hdr["y"]:
+        h = (enemy_hdr["y"] - your_hdr["y"]) / TEAM_GAP_OF_SCREEN   # the screen this scoreboard belongs to
     leave = find("Leave Match")
-    end_y = leave["y"] if leave else h
+    end_y = leave["y"] if leave else img_h
 
     cols_y, cols_e = _columns(toks, your_hdr, h), _columns(toks, enemy_hdr, h)
     for c in STAT_COLUMNS:  # both tables share the same columns
@@ -305,6 +319,31 @@ def _parse_pass(img, toks: List[dict], champion_names: List[str]) -> dict:
     }
 
 
+def _label_closeup(img, box: List[int], champion_names: List[str]) -> Optional[str]:
+    """Read the champion name printed under a portrait from a zoomed-in crop - short labels
+    like "IVA" over a busy portrait are often missed when reading the whole scoreboard."""
+    import cv2
+
+    x0, y0, x1, y1 = box
+    s = x1 - x0
+    if s <= 0:
+        return None
+    h, w = img.shape[:2]
+    cx = (x0 + x1) / 2
+    crop = img[max(0, int(y0 + s * 0.45)):min(h, int(y1 + s * 0.45)), max(0, int(cx - s * 0.95)):min(w, int(cx + s * 0.95))]
+    if crop.size == 0:
+        return None
+    crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    crop = cv2.copyMakeBorder(crop, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+    best, best_s = None, 0.0
+    for _, text in _ocr_run(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)):
+        for c in champion_names:
+            sc = similarity(c, text)
+            if sc > best_s:
+                best, best_s = c, sc
+    return best if best_s >= 0.75 else None
+
+
 def _filled(p: dict) -> int:
     return sum(v is not None for v in p["stats"].values()) + bool(p.get("name")) + bool(p.get("champion"))
 
@@ -319,6 +358,9 @@ def parse_scoreboard(image, champion_names: List[str], icon_refs: Optional[Dict[
     h, w = img.shape[:2]
     factors = sorted({round(max(1.0, t / h), 2) for t in (h, 1800.0, 2600.0)})
     passes = [_parse_pass(img, _tokens(img, f), champion_names) for f in factors]
+    if not any(p["your_team"] and p["enemy_team"] for p in passes):
+        # not in the middle of the image: probably cropped close around the scoreboard - read all of it
+        passes += [_parse_pass(img, _tokens(img, f, whole=True), champion_names) for f in factors]
 
     result = {"average_tab": any(p["average_tab"] for p in passes)}
     for side in ("your_team", "enemy_team"):
@@ -341,6 +383,10 @@ def parse_scoreboard(image, champion_names: List[str], icon_refs: Optional[Dict[
     warnings: List[str] = []
     for side, label in (("your_team", "Your Team"), ("enemy_team", "Enemy Team")):
         for p in result[side]:
+            if not p["champion"]:
+                close = _label_closeup(img, p["icon_box"], champion_names)
+                if close:
+                    p["champion"], p["champion_source"] = close, "label"
             icon_champ, dist = match_icon(img, p["icon_box"], icon_refs or {})
             if icon_champ and not p["champion"]:
                 p["champion"], p["champion_source"] = icon_champ, "icon"
