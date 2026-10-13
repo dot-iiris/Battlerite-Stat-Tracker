@@ -64,12 +64,12 @@ install_build() {
   rm -rf "$SITE/frontend/build.old"
 }
 
-REQ=$(sha256sum "$SITE/deploy/requirements-server.txt" | cut -c1-16)
+REQ=$(sha256sum "$SITE/backend/requirements.txt" | cut -c1-16)
 if [ ! -x "$APP/venv/bin/python" ] || changed backend-req "$REQ"; then
   log "Backend packages"
   [ -x "$APP/venv/bin/python" ] || as_app python3 -m venv "$APP/venv"
   as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check --upgrade pip
-  as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check -r "$SITE/deploy/requirements-server.txt"
+  as_app "$APP/venv/bin/pip" install -q --disable-pip-version-check -r "$SITE/backend/requirements.txt"
   done_with backend-req "$REQ"
 fi
 
@@ -89,8 +89,6 @@ if [ ! -f "$SITE/frontend/build/index.html" ] || changed frontend "$FRONT"; then
   log "Building the website on the server (the live site keeps running; this takes a while)"
   as_app tee "$SITE/frontend/.env.production.local" >/dev/null <<'EOF2'
 REACT_APP_BACKEND_URL=
-DISABLE_EMERGENT_OVERLAY=true
-ENABLE_HEALTH_CHECK=false
 GENERATE_SOURCEMAP=false
 EOF2
   cd "$SITE/frontend"
