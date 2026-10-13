@@ -436,6 +436,18 @@ async def me(user: dict = Depends(get_current_user)):
     return user
 
 
+class SeasonPick(BaseModel):
+    name: Literal["all", "leaderboard"]   # which season picker
+    value: str = Field(default="", max_length=64)   # "" = All, "ranked" = All Ranked, else a season id
+
+
+@api_router.put("/auth/me/season-pick")
+async def save_season_pick(data: SeasonPick, user: dict = Depends(get_current_user)):
+    """Remember a logged-in player's last season pick on their account (it follows them across devices)."""
+    await db.users.update_one({"id": user["id"]}, {"$set": {f"prefs.seasons.{data.name}": data.value}})
+    return {"ok": True}
+
+
 
 # --------- Log in with Discord ---------
 # Discord Developer Portal > your app (the bot's app is fine) > OAuth2:
