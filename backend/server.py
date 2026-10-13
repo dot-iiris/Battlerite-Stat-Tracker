@@ -2329,7 +2329,8 @@ async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), upl
     }, upsert=True)
     await db.pending_matches.update_one({"id": pmid}, {"$set": {"screenshot": meta}})
     pm["screenshot"] = meta
-    out = await _parse_into_pending(pm)
+    out = await _parse_into_pending(pm)   # read from the original upload
+    await _compress_stored(pmid)           # then keep a much smaller copy
     _spawn(prune_screenshots())
     return out
 
@@ -2341,6 +2342,42 @@ async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), upl
 # being confirmed are never deleted.
 SCREENSHOT_STORAGE_MB = float(os.environ.get("SCREENSHOT_STORAGE_MB") or 1024)
 _prune_lock = asyncio.Lock()
+
+
+STORE_WEBP_QUALITY = 90   # tested: reads the same as the original PNG at ~10x smaller
+
+
+def _to_webp(data: bytes) -> Optional[bytes]:
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    ok, buf = cv2.imencode(".webp", img, [cv2.IMWRITE_WEBP_QUALITY, STORE_WEBP_QUALITY])
+    return buf.tobytes() if ok and len(buf) < len(data) else None
+
+
+async def _compress_stored(sid: str):
+    """Swap a stored screenshot for a WebP copy (the sha256 of the original upload is kept, for duplicates)."""
+    shot = await db.screenshots.find_one({"id": sid}, {"_id": 0})
+    if not shot or shot.get("content_type") == "image/webp":
+        return
+    try:
+        small = await _run_ocr(_to_webp, bytes(shot["data"]))
+    except Exception:
+        logging.getLogger(__name__).exception("Couldn't compress screenshot %s", sid)
+        return
+    if not small:
+        return
+    file = f"{sid}.webp"
+    await db.screenshots.update_one({"id": sid}, {"$set": {
+        "data": small, "content_type": "image/webp", "size": len(small), "file": file,
+        "original_size": shot.get("size"),
+    }})
+    await db.pending_matches.update_one({"id": sid}, {"$set": {"screenshot.file": file}})
 
 
 async def screenshot_storage() -> dict:
@@ -2371,6 +2408,14 @@ async def prune_screenshots():
     """Remove duplicate and unused screenshots, then the oldest ones while over the limit."""
     async with _prune_lock:
         shots = await db.screenshots.find({}, {"_id": 0, "data": 0}).sort("uploaded_at", 1).to_list(100000)
+        for s in shots:   # screenshots stored before compression: shrink them (hash the original first)
+            if s.get("content_type") != "image/webp":
+                if not s.get("sha256"):
+                    full = await db.screenshots.find_one({"id": s["id"]}, {"_id": 0, "data": 1})
+                    s["sha256"] = hashlib.sha256(bytes(full["data"])).hexdigest()
+                    await db.screenshots.update_one({"id": s["id"]}, {"$set": {"sha256": s["sha256"]}})
+                await _compress_stored(s["id"])
+                s["size"] = ((await db.screenshots.find_one({"id": s["id"]}, {"_id": 0, "size": 1})) or {}).get("size", s.get("size"))
         for s in shots:   # screenshots from before hashes were kept
             if not s.get("sha256"):
                 full = await db.screenshots.find_one({"id": s["id"]}, {"_id": 0, "data": 1})
