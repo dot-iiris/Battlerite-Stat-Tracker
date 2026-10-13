@@ -129,4 +129,4 @@ log "Building BR Stats"
 brstats-update --no-pull
 
 touch "$APP/.setup-done"
-log "Setup done. Next: upload your settings, bot and data (upload-to-oracle.bat on your PC)."
+log "Setup done. Next: upload your settings, bot and data (deploy-bot-and-settings.bat on your PC)."
