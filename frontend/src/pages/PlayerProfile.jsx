@@ -11,6 +11,14 @@ import FormatFilter, { byFormat, MatchCode } from "@/components/FormatFilter";
 import MatchDetails from "@/components/MatchDetails";
 import MmrChange from "@/components/MmrChange";
 
+// Rank head-to-head records fairly for small samples: each record counts as if it had PRIOR_GAMES
+// extra games at the player's own overall win rate, so 2-0 doesn't beat a steady 15-5.
+const PRIOR_GAMES = 5;
+const adjusted = (r, base) => (r.wins + PRIOR_GAMES * base) / (r.matches + PRIOR_GAMES);
+const top3 = (rows, base, best) => [...rows]
+  .sort((a, b) => (best ? adjusted(b, base) - adjusted(a, base) : adjusted(a, base) - adjusted(b, base)) || b.matches - a.matches)
+  .slice(0, 3);
+
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
 export default function PlayerProfile() {
@@ -52,6 +60,9 @@ export default function PlayerProfile() {
 
   const playerName = (pid) => players.find((p) => p.id === pid)?.name || "—";
   const listed = matches.filter(byFormat(format));
+  const base = stats.total_matches ? stats.total_wins / stats.total_matches : 0.5;
+  const teammates = top3(stats.teammates, base, true);    // best partners
+  const opponents = top3(stats.opponents, base, false);   // toughest opponents
   const shown = showAll ? listed : listed.slice(0, 10);
 
   return (
@@ -165,10 +176,11 @@ export default function PlayerProfile() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="hud-card p-5">
-          <h3 className="font-heading text-lg font-bold uppercase mb-4 text-cyan-400">Teammates (H2H)</h3>
-          {stats.teammates.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No teammates yet.</div> : (
+          <h3 className="font-heading text-lg font-bold uppercase text-cyan-400">Best Teammates</h3>
+          <div className="text-[10px] font-mono-hud text-slate-500 mb-4" title={`Win rate with each player, counting ${PRIOR_GAMES} extra games at this player's usual win rate so a few lucky games don't top the list`}>Top 3 · win rate together, weighted by games played</div>
+          {teammates.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No teammates yet.</div> : (
             <div className="space-y-2">
-              {stats.teammates.map((t) => (
+              {teammates.map((t) => (
                 <Link key={t.player_id} to={`/players/${t.player_id}`} className="group flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
                   <span className="group-hover:text-cyan-400">{t.name}</span>
                   <div className="flex items-center gap-3 text-xs font-mono-hud">
@@ -182,10 +194,11 @@ export default function PlayerProfile() {
         </div>
 
         <div className="hud-card p-5">
-          <h3 className="font-heading text-lg font-bold uppercase mb-4 text-[#FF2E55]">Opponents (H2H)</h3>
-          {stats.opponents.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No opponents yet.</div> : (
+          <h3 className="font-heading text-lg font-bold uppercase text-[#FF2E55]">Toughest Opponents</h3>
+          <div className="text-[10px] font-mono-hud text-slate-500 mb-4" title={`Win rate against each player, counting ${PRIOR_GAMES} extra games at this player's usual win rate so a few unlucky games don't top the list`}>Top 3 · lowest win rate against, weighted by games played</div>
+          {opponents.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No opponents yet.</div> : (
             <div className="space-y-2">
-              {stats.opponents.map((o) => (
+              {opponents.map((o) => (
                 <Link key={o.player_id} to={`/players/${o.player_id}`} className="group flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
                   <span className="group-hover:text-cyan-400">{o.name}</span>
                   <div className="flex items-center gap-3 text-xs font-mono-hud">
