@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "@/api";
 import { Trophy, Swords, Users, Activity, Flame } from "lucide-react";
@@ -98,6 +98,28 @@ export default function Dashboard() {
 
   const playerNames = Object.fromEntries(players.map((p) => [p.id, p.name]));
 
+  // Recent matches fill the height of the ladder beside them: rows that don't fully fit are hidden
+  // (3v3 rows are taller than 2v2). Stacked on small screens, it just shows the latest 6.
+  const fitRef = useRef(null);
+  useLayoutEffect(() => {
+    const wrap = fitRef.current;
+    if (!wrap) return undefined;
+    const wide = window.matchMedia("(min-width: 1024px)");
+    const measure = () => {
+      const rows = [...(wrap.querySelector('[data-testid="dashboard-recent"]')?.children || [])];
+      const bottom = wrap.getBoundingClientRect().bottom + 1;
+      rows.forEach((r, i) => {
+        r.style.display = wide.matches || i < 6 ? "" : "none";
+        r.style.visibility = !wide.matches || r.getBoundingClientRect().bottom <= bottom ? "" : "hidden";
+      });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrap);
+    wide.addEventListener("change", measure);
+    return () => { ro.disconnect(); wide.removeEventListener("change", measure); };
+  }, [matches, recentFormat, leaderboard, players]);
+
   return (
     <div className="space-y-8" data-testid="dashboard-page">
       <div>
@@ -120,7 +142,7 @@ export default function Dashboard() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="hud-card p-6 lg:col-span-7">
+        <div className="hud-card p-6 lg:col-span-7 flex flex-col">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-slate-100 flex items-center gap-2"><Swords className="w-4 h-4 text-cyan-400" /> Recent Matches</h2>
             <div className="flex items-center gap-3">
@@ -131,9 +153,14 @@ export default function Dashboard() {
           {matches.length === 0 ? (
             <div className="text-slate-500 text-sm py-6 text-center font-mono-hud">No matches logged yet. <Link to="/log" className="text-cyan-400 hover:underline">Log one</Link>.</div>
           ) : (
-            <MatchList key={recentFormat} matches={matches.filter(byFormat(recentFormat))} playerName={(id) => playerNames[id] || "?"}
-              limit={6} showAllButton={false} linkTo={(m) => `/matches?match=${m.id}`}
-              emptyText={`No ${recentFormat} matches yet.`} testid="dashboard-recent" />
+            // on wide screens the list is taken out of the card's height, so the ladder sets it
+            <div ref={fitRef} className="lg:relative lg:flex-1 lg:min-h-[200px]">
+              <div className="lg:absolute lg:inset-0 lg:overflow-hidden">
+                <MatchList key={recentFormat} matches={matches.filter(byFormat(recentFormat))} playerName={(id) => playerNames[id] || "?"}
+                  limit={12} showAllButton={false} linkTo={(m) => `/matches?match=${m.id}`}
+                  emptyText={`No ${recentFormat} matches yet.`} testid="dashboard-recent" />
+              </div>
+            </div>
           )}
         </div>
 
