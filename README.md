@@ -75,3 +75,12 @@ free-tier Ubuntu server behind nginx, with HTTPS certificates from Let's
 Encrypt. Setup is described in deploy/README.md. The scripts are written for a
 particular server and domain, so some names will need to be changed for other
 deployments.
+
+## AI assistance
+
+Much of the development since the fork, including new features, fixes and the
+hosting scripts, was carried out with the assistance of Claude, an AI model
+made by Anthropic, used as a coding agent. The work was done at the
+maintainer's direction, and commits are authored by the maintainer without
+recording this assistance individually. As with any software, the code may
+contain errors and is provided as is.
