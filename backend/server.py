@@ -1130,10 +1130,11 @@ async def _insert_match(data: MatchCreate, code: Optional[str] = None) -> dict:
 @api_router.get("/matches")
 async def list_matches(season_id: Optional[str] = None, player_id: Optional[str] = None,
                        format: Optional[str] = None, q: Optional[str] = None,
-                       limit: Optional[int] = None, offset: int = 0):
+                       limit: Optional[int] = None, offset: int = 0, around: Optional[str] = None):
     """Newest first. With `limit`: one page as {"items", "total"} (the Matches page); without it,
     every match as a list (dashboard, player pages). `q` searches player names, champions, notes and
-    match codes (old ones too)."""
+    match codes (old ones too). `around` (an id or code) picks the page with that match in the middle,
+    for links to a match; the reply then also says where the page starts and which match it was."""
     query = {}
     query.update(await season_filter(season_id))
     if player_id:
@@ -1150,8 +1151,19 @@ async def list_matches(season_id: Optional[str] = None, player_id: Optional[str]
     if limit is None:
         return await cursor.to_list(10000)
     limit = max(1, min(int(limit), 200))
-    items = await cursor.skip(max(0, int(offset))).limit(limit).to_list(limit)
-    return {"items": items, "total": await db.matches.count_documents(query)}
+    offset = max(0, int(offset))
+    target = None
+    if around:
+        t = await db.matches.find_one({"$and": [query, match_ref_query(around)]}, {"_id": 0, "id": 1, "played_at": 1})
+        if t:
+            target = t["id"]
+            newer = await db.matches.count_documents({"$and": [query, {"$or": [
+                {"played_at": {"$gt": t["played_at"]}},
+                {"played_at": t["played_at"], "id": {"$gt": t["id"]}}]}]})
+            offset = max(0, newer - limit // 2)
+            cursor = db.matches.find(query, {"_id": 0}).sort([("played_at", -1), ("id", -1)])
+    items = await cursor.skip(offset).limit(limit).to_list(limit)
+    return {"items": items, "total": await db.matches.count_documents(query), "offset": offset, "target": target}
 
 
 @api_router.get("/matches/{mid}")
