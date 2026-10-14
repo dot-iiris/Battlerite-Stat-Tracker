@@ -1,6 +1,9 @@
 import axios from "axios";
 
+import { preloadPageCode } from "@/pageLoaders";
+
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+export const MATCHES_PAGE = 30;   // matches per page on the Matches page
 export const API = `${BACKEND_URL}/api`;
 
 const api = axios.create({
@@ -66,8 +69,10 @@ const PREFETCH = {
   },
   "/matches": async () => {
     api.get("/players");
-    const sid = await activeSeasonId();
-    api.get("/matches", { params: sid ? { season_id: sid } : {} });
+    api.get("/seasons");
+    const { savedSeason } = await import("@/components/SeasonSelect");
+    const sid = savedSeason();
+    api.get("/matches", { params: { ...(sid ? { season_id: sid } : {}), limit: MATCHES_PAGE, offset: 0 } });
   },
   "/leaderboard": async () => {
     const sid = await activeSeasonId();
@@ -87,6 +92,7 @@ const PREFETCH = {
 };
 
 export function prefetchPage(path, ctx = {}) {
+  preloadPageCode(path);   // the page's code as well as its data
   const fn = PREFETCH[path];
   if (!fn) return;
   Promise.resolve()
