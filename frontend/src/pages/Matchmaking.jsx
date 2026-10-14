@@ -6,8 +6,8 @@ import SeasonSelect, { newestSeason } from "@/components/SeasonSelect";
 
 const modes = [
   { key: "mmr", label: "MMR Balance", desc: "Match teams by average ELO only" },
-  { key: "synergy", label: "Role Synergy", desc: "Optimize role diversity within teams" },
-  { key: "hybrid", label: "Hybrid Balance", desc: "60% MMR + 40% Role Synergy" },
+  { key: "synergy", label: "Role Synergy", desc: "Role fit only: both teams able to put players on roles they're good at" },
+  { key: "hybrid", label: "Hybrid Balance", desc: "Mostly MMR, plus role fit (roles shown are the suggested line-up)" },
 ];
 
 // The picked players (and format) are remembered in this browser for 30 minutes, so switching
