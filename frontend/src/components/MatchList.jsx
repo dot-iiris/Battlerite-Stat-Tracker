@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import MatchDetails from "@/components/MatchDetails";
@@ -19,6 +19,7 @@ export default function MatchList({
 }) {
   const [openId, setOpenId] = useState(null);
   const [showAll, setShowAll] = useState(false);
+  const navigate = useNavigate();
   if (matches.length === 0) return <div className="text-slate-500 text-sm font-mono-hud">{emptyText}</div>;
   const shown = showAll ? matches : matches.slice(0, limit);
 
@@ -46,20 +47,26 @@ export default function MatchList({
                 <span className={`inline-flex leading-[0] rounded flex-shrink-0 ${marked(p) ? `ring-2 ${ring} ring-offset-1 ring-offset-[#121828]` : ""}`}>
                   <ChampionPortrait name={p.champion} role={p.role} size={22} linkToProfile={false} />
                 </span>
-                <span className={`text-xs truncate ${focusPlayer && p.player_id === focusPlayer ? "text-cyan-400 font-bold" : "text-slate-300"}`}>
+                <Link to={`/players/${p.player_id}`} data-testid={`${testid}-player-${p.player_id}`}
+                  className={`text-xs truncate hover:text-cyan-400 hover:underline ${focusPlayer && p.player_id === focusPlayer ? "text-cyan-400 font-bold" : "text-slate-300"}`}>
                   {playerName(p.player_id)}
-                </span>
+                </Link>
               </span>
             ))}
           </span>
         );
 
-        const Row = linkTo ? Link : "button";
-        const rowProps = linkTo ? { to: linkTo(m) } : { type: "button", onClick: () => setOpenId(open ? null : m.id) };
+        // the row opens the match (or goes to linkTo); names and champion pop-ups inside it keep their own links
+        const activate = () => (linkTo ? navigate(linkTo(m)) : setOpenId(open ? null : m.id));
+        const onRowClick = (e) => {
+          if (!e.currentTarget.contains(e.target) || e.target.closest("a,button")) return;
+          activate();
+        };
         return (
           <div key={m.id} className={`bg-[#121828]/60 border rounded transition-colors ${open ? "border-cyan-400/50" : "border-[#1B2438] hover:border-cyan-400/40"}`}>
-            <Row {...rowProps} data-testid={`${testid}-${m.id}`}
-              className="w-full grid grid-cols-[auto_1fr] sm:grid-cols-[auto_1fr_auto] items-center gap-3 p-3 text-left">
+            <div role="button" tabIndex={0} onClick={onRowClick} data-testid={`${testid}-${m.id}`}
+              onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); activate(); } }}
+              className="w-full grid grid-cols-[auto_1fr] sm:grid-cols-[auto_1fr_auto] items-center gap-3 p-3 text-left cursor-pointer">
               <div className="flex flex-col items-start gap-1.5">
                 {side ? (
                   <span className={`text-[10px] font-mono-hud font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${won ? "text-[#00E676] border-[#00E676]/40 bg-[#00E676]/10" : "text-[#FF2E55] border-[#FF2E55]/40 bg-[#FF2E55]/10"}`}>
@@ -86,10 +93,11 @@ export default function MatchList({
                     : <ChevronDown className={`w-4 h-4 transition-transform ${open ? "rotate-180 text-cyan-400" : ""}`} />}
                 </span>
               </div>
-            </Row>
+            </div>
             {open && (
               <div className="px-3 pb-3">
                 <MatchDetails match={m} playerName={playerName} onChanged={onChanged}
+                  highlight={focusPlayer || focusChampion ? marked : null} tone={focusPlayer ? "cyan" : "gold"}
                   seasonName={seasons.find((x) => x.id === m.season_id)?.name} />
               </div>
             )}

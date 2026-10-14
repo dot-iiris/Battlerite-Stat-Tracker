@@ -7,7 +7,9 @@ const HoverCard = HoverCardPrimitive.Root
 
 const HoverCardTrigger = HoverCardPrimitive.Trigger
 
+// rendered in a portal: not faded or clipped by whatever row it was opened from
 const HoverCardContent = React.forwardRef(({ className, align = "center", sideOffset = 4, ...props }, ref) => (
+  <HoverCardPrimitive.Portal>
   <HoverCardPrimitive.Content
     ref={ref}
     align={align}
@@ -17,6 +19,7 @@ const HoverCardContent = React.forwardRef(({ className, align = "center", sideOf
       className
     )}
     {...props} />
+  </HoverCardPrimitive.Portal>
 ))
 HoverCardContent.displayName = HoverCardPrimitive.Content.displayName
 
