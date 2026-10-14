@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import api, { MATCHES_PAGE } from "@/api";
 import { toast } from "sonner";
-import { Trash2, Filter, Pencil, Search, Download, ChevronDown, Send, Link2, X } from "lucide-react";
+import { Trash2, Filter, Pencil, Search, Download, ChevronDown, Send } from "lucide-react";
 import { useAuth } from "@/AuthContext";
 import EditMatchDialog from "@/components/EditMatchDialog";
 import ChampionPortrait from "@/components/ChampionPortrait";
@@ -13,27 +13,33 @@ import FormatFilter, { MatchCode } from "@/components/FormatFilter";
 
 // The list is loaded a page at a time (newest first). Search runs on the server, so it
 // also finds matches that haven't been loaded yet. A link to one match (/matches?match=<id>,
-// e.g. from the Discord match log) fetches that match on its own and pins it at the top,
-// however old it is.
+// e.g. from the Discord match log) loads the part of the list around that match, however old,
+// with "Load newer" above and "Load older" below, and scrolls to it.
 export default function Matches() {
+  const [params, setParams] = useSearchParams();
+  const openId = params.get("match");
   const [matches, setMatches] = useState([]);
+  const [start, setStart] = useState(0);             // position of the first loaded match in the full list
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState("");   // "newer" | "older" while loading
   const [seasons, setSeasons] = useState([]);
   const [players, setPlayers] = useState([]);
-  const [seasonFilter, setSeasonFilter] = useState(() => savedSeason());
+  // a link can point at a match from any season, so it starts on All
+  const [seasonFilter, setSeasonFilter] = useState(() => (openId ? "" : savedSeason()));
   const [playerFilter, setPlayerFilter] = useState("");
   const [formatFilter, setFormatFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");          // search, once typing pauses
   const [editing, setEditing] = useState(null);
   const { isAdmin } = useAuth();
-  const [params, setParams] = useSearchParams();
-  const openId = params.get("match");
-  const [linkedId, setLinkedId] = useState(openId);   // the match a link pointed at
-  const [linked, setLinked] = useState(null);
-  const scrolledTo = useRef(null);
+  const jumpTo = useRef(openId);                     // a linked match still to load the list around
+  const linkSeen = useRef(openId);                   // the last ?match= this page has handled
+  const setParamsRef = useRef(setParams);            // (its identity changes with the URL)
+  setParamsRef.current = setParams;
+  const [jumpTick, setJumpTick] = useState(0);
+  const scrollTo = useRef(null);
+  const anchor = useRef(null);                       // keeps the view still when newer matches are added above
   const request = useRef(0);                         // ignore replies to older requests
   const [logStatus, setLogStatus] = useState(null);   // admin: matches not yet in the Discord match log
 
@@ -54,7 +60,7 @@ export default function Matches() {
   }, [search]);
 
   // Same params (and order of building) as the Matches prefetch in api.js, so a hovered tab's data is reused
-  const listParams = useCallback((offset, limit = MATCHES_PAGE) => {
+  const listParams = useCallback((offset, limit = MATCHES_PAGE, around) => {
     const p = {};
     if (seasonFilter) p.season_id = seasonFilter;
     if (playerFilter) p.player_id = playerFilter;
@@ -62,18 +68,28 @@ export default function Matches() {
     if (query) p.q = query;
     p.limit = limit;
     p.offset = offset;
+    if (around) p.around = around;
     return p;
   }, [seasonFilter, playerFilter, formatFilter, query]);
 
-  // (Re)load from the top. keep=true keeps as many matches showing as before (after an edit).
-  const load = useCallback(async (keep = 0) => {
+  const load = useCallback(async ({ offset = 0, limit = MATCHES_PAGE, around } = {}) => {
     const id = ++request.current;
-    const limit = Math.min(200, Math.max(MATCHES_PAGE, keep));
     try {
-      const { data } = await api.get("/matches", { params: listParams(0, limit) });
+      const { data } = await api.get("/matches", { params: listParams(offset, limit, around) });
       if (id !== request.current) return;
       setMatches(data.items);
       setTotal(data.total);
+      setStart(data.offset ?? offset);
+      if (around) {
+        if (data.target) {
+          scrollTo.current = data.target;
+          // old links use old ids - from here on the URL uses the match's own id
+          linkSeen.current = data.target;
+          if (data.target !== around) setParamsRef.current((cur) => { const n = new URLSearchParams(cur); n.set("match", data.target); return n; }, { replace: true });
+        } else {
+          toast.error("That match no longer exists");
+        }
+      }
     } catch {
       if (id === request.current) toast.error("Couldn't load matches");
     } finally {
@@ -81,13 +97,46 @@ export default function Matches() {
     }
   }, [listParams]);
 
-  useEffect(() => { setLoading(true); load(); }, [load]);
+  useEffect(() => {
+    const around = jumpTo.current;
+    jumpTo.current = null;
+    setLoading(true);
+    load(around ? { around } : {});
+  }, [load, jumpTick]);
 
-  const loadMore = async () => {
+  // Following another match link while this page is open
+  useEffect(() => {
+    if (openId === linkSeen.current) return;
+    linkSeen.current = openId;
+    if (!openId || matches.some((m) => m.id === openId)) return;
+    jumpTo.current = openId;
+    setSeasonFilter(""); setPlayerFilter(""); setFormatFilter("all"); setSearch(""); setQuery("");
+    setJumpTick((t) => t + 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openId]);
+
+  useEffect(() => {
+    const id = scrollTo.current;
+    if (!id || !matches.some((m) => m.id === id)) return;
+    scrollTo.current = null;
+    requestAnimationFrame(() => {
+      document.getElementById(`match-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [matches]);
+
+  useLayoutEffect(() => {
+    const a = anchor.current;
+    if (!a) return;
+    anchor.current = null;
+    const el = document.getElementById(`match-${a.id}`);
+    if (el) window.scrollBy(0, el.getBoundingClientRect().top - a.top);
+  }, [matches]);
+
+  const loadOlder = async () => {
     const id = request.current;
-    setLoadingMore(true);
+    setLoadingMore("older");
     try {
-      const { data } = await api.get("/matches", { params: listParams(matches.length) });
+      const { data } = await api.get("/matches", { params: listParams(start + matches.length) });
       if (id !== request.current) return;
       setMatches((cur) => {
         const seen = new Set(cur.map((m) => m.id));
@@ -97,41 +146,34 @@ export default function Matches() {
     } catch {
       toast.error("Couldn't load more matches");
     } finally {
-      setLoadingMore(false);
+      setLoadingMore("");
     }
   };
 
-  // A link to a match that isn't already in the list pins it (also when a new link is
-  // followed while this page is open). Opening matches from the list doesn't.
-  useEffect(() => {
-    if (openId && openId !== linkedId && !matches.some((m) => m.id === openId)) setLinkedId(openId);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openId]);
-
-  const loadLinked = useCallback(async () => {
-    if (!linkedId) { setLinked(null); return; }
+  const loadNewer = async () => {
+    const id = request.current;
+    const from = Math.max(0, start - MATCHES_PAGE);
+    setLoadingMore("newer");
     try {
-      const { data } = await api.get(`/matches/${encodeURIComponent(linkedId)}`);
-      setLinked(data);
-    } catch (err) {
-      setLinked(null);
-      setLinkedId(null);
-      if (err?.response?.status === 404) toast.error("That match no longer exists");
+      const { data } = await api.get("/matches", { params: listParams(from, start - from) });
+      if (id !== request.current) return;
+      const first = matches[0] && document.getElementById(`match-${matches[0].id}`);
+      if (first) anchor.current = { id: matches[0].id, top: first.getBoundingClientRect().top };
+      setMatches((cur) => {
+        const seen = new Set(cur.map((m) => m.id));
+        return [...data.items.filter((m) => !seen.has(m.id)), ...cur];
+      });
+      setStart(from);
+      setTotal(data.total);
+    } catch {
+      toast.error("Couldn't load newer matches");
+    } finally {
+      setLoadingMore("");
     }
-  }, [linkedId]);
+  };
 
-  useEffect(() => { loadLinked(); }, [loadLinked]);
-
-  // Arriving from a link: scroll to the match once it has loaded
-  useEffect(() => {
-    if (!linked || scrolledTo.current === linked.id) return;
-    scrolledTo.current = linked.id;
-    requestAnimationFrame(() => {
-      document.getElementById(`match-${linked.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-  }, [linked]);
-
-  const refresh = () => { load(matches.length); loadLinked(); };
+  // after an edit: reload the same stretch of the list
+  const refresh = () => load({ offset: start, limit: Math.min(200, Math.max(MATCHES_PAGE, matches.length)) });
 
   const backfill = async () => {
     if (!window.confirm(`Post ${logStatus.unposted} match${logStatus.unposted === 1 ? "" : "es"} to the Discord match log, oldest first? New matches carry on posting as normal afterwards.`)) return;
@@ -144,21 +186,12 @@ export default function Matches() {
     }
   };
 
-  // Links may use an old id; the match's own id is what the list and the URL use from then on
-  const isOpen = (m) => openId === m.id || (linked?.id === m.id && openId === linkedId);
+  const isOpen = (m) => openId === m.id;
 
   const toggleOpen = (m) => {
     const next = new URLSearchParams(params);
     if (isOpen(m)) next.delete("match"); else next.set("match", m.id);
     setParams(next, { replace: true });
-  };
-
-  const unpin = () => {
-    const next = new URLSearchParams(params);
-    if (linked && isOpen(linked)) next.delete("match");
-    setParams(next, { replace: true });
-    setLinkedId(null);
-    setLinked(null);
   };
 
   const playerName = (id) => players.find((p) => p.id === id)?.name || "—";
@@ -167,8 +200,7 @@ export default function Matches() {
     if (!confirm("Delete this match? Season ELO will be recomputed.")) return;
     await api.delete(`/matches/${id}`);
     toast.success("Match deleted · ELO recomputed");
-    if (linked?.id === id) unpin();
-    load(matches.length);
+    refresh();
   };
 
   const teamCard = (team, won) => (
@@ -188,21 +220,16 @@ export default function Matches() {
     </div>
   );
 
-  const row = (m, pinned = false) => {
+  const row = (m) => {
     const aWon = m.winner_team === "A";
     const open = isOpen(m);
     return (
       <div key={m.id} id={`match-${m.id}`}
         className={`hud-card p-5 cursor-pointer transition-colors ${open ? "border-cyan-400/60 ring-1 ring-cyan-400/40" : "hover:border-cyan-400/30"}`}
         onClick={(e) => { if (!e.target.closest("a,button,input,select")) toggleOpen(m); }}
-        data-testid={pinned ? "match-linked" : `match-row-${m.id}`}>
+        data-testid={`match-row-${m.id}`}>
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <div className="flex items-center gap-3 flex-wrap">
-            {pinned && (
-              <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 rounded border border-cyan-400/50 text-cyan-400 flex items-center gap-1">
-                <Link2 className="w-3 h-3" /> Linked match
-              </span>
-            )}
             <MatchCode match={m} className="text-xs" />
             <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
             <span className="text-[10px] font-mono-hud uppercase text-slate-500">{new Date(m.played_at).toLocaleString()}</span>
@@ -217,9 +244,6 @@ export default function Matches() {
                 <button onClick={() => setEditing(m)} className="text-slate-500 hover:text-cyan-400 text-xs flex items-center gap-1 p-1" data-testid={`match-edit-${m.id}`}><Pencil className="w-3.5 h-3.5" /></button>
                 <button onClick={() => del(m.id)} className="text-slate-500 hover:text-[#FF2E55] text-xs flex items-center gap-1 p-1" data-testid={`match-delete-${m.id}`}><Trash2 className="w-3.5 h-3.5" /></button>
               </>
-            )}
-            {pinned && (
-              <button onClick={unpin} title="Unpin" className="text-slate-500 hover:text-cyan-400 p-1" data-testid="match-linked-unpin"><X className="w-3.5 h-3.5" /></button>
             )}
           </div>
         </div>
@@ -241,8 +265,6 @@ export default function Matches() {
       </div>
     );
   };
-
-  const listed = matches.filter((m) => m.id !== linked?.id);
 
   return (
     <div className="space-y-6" data-testid="matches-page">
@@ -285,27 +307,34 @@ export default function Matches() {
         </div>
       </div>
 
-      {linked && <div className="space-y-3">{row(linked, true)}</div>}
+      {start > 0 && !loading && (
+        <div className="flex justify-center">
+          <button onClick={loadNewer} disabled={!!loadingMore} data-testid="matches-load-newer"
+            className="border border-cyan-400/60 text-cyan-400 hover:bg-cyan-400/10 disabled:opacity-50 font-mono-hud font-bold uppercase tracking-wider text-xs px-5 py-2.5 rounded">
+            {loadingMore === "newer" ? "Loading..." : `Load ${Math.min(MATCHES_PAGE, start)} newer`}
+          </button>
+        </div>
+      )}
 
       {loading && matches.length === 0 ? (
         <div className="hud-card p-12 text-center text-slate-500 font-mono-hud">Loading matches...</div>
-      ) : listed.length === 0 ? (
-        <div className="hud-card p-12 text-center text-slate-500 font-mono-hud">No {linked ? "other " : ""}matches found.</div>
+      ) : matches.length === 0 ? (
+        <div className="hud-card p-12 text-center text-slate-500 font-mono-hud">No matches found.</div>
       ) : (
         <div className={`space-y-3 transition-opacity ${loading ? "opacity-60" : ""}`}>
-          {listed.map((m) => row(m))}
+          {matches.map((m) => row(m))}
         </div>
       )}
 
       {matches.length > 0 && (
         <div className="flex flex-col items-center gap-2 pb-4">
           <div className="text-[11px] font-mono-hud uppercase tracking-wider text-slate-500" data-testid="matches-count">
-            Showing {matches.length} of {total}
+            {start > 0 ? `Showing ${start + 1}-${start + matches.length} of ${total} (newest first)` : `Showing ${matches.length} of ${total}`}
           </div>
-          {matches.length < total && (
-            <button onClick={loadMore} disabled={loadingMore} data-testid="matches-load-more"
+          {start + matches.length < total && (
+            <button onClick={loadOlder} disabled={!!loadingMore} data-testid="matches-load-more"
               className="border border-cyan-400/60 text-cyan-400 hover:bg-cyan-400/10 disabled:opacity-50 font-mono-hud font-bold uppercase tracking-wider text-xs px-5 py-2.5 rounded">
-              {loadingMore ? "Loading..." : `Load ${Math.min(MATCHES_PAGE, total - matches.length)} more`}
+              {loadingMore === "older" ? "Loading..." : `Load ${Math.min(MATCHES_PAGE, total - start - matches.length)} older`}
             </button>
           )}
         </div>
