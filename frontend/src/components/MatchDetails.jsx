@@ -20,7 +20,21 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 10
 
 // Expanded view of one match: per-player scoreboard stats (round averages)
 // and the derived numbers from /api/matches/{id}/stats.
-export default function MatchDetails({ match, playerName, seasonName, onChanged }) {
+// highlight(p): true for the player/champion the page is about; tone "cyan" (player) or "gold" (champion)
+const TONES = {
+  cyan: { row: "bg-cyan-400/[0.07]", ring: "ring-cyan-400", name: "text-cyan-400 font-bold" },
+  gold: { row: "bg-[#FFB800]/[0.07]", ring: "ring-[#FFB800]", name: "text-[#FFB800] font-bold" },
+};
+
+export default function MatchDetails({ match, playerName, seasonName, onChanged, highlight = null, tone = "cyan" }) {
+  const hl = (p) => !!highlight && highlight(p);
+  const T = TONES[tone] || TONES.cyan;
+  const portrait = (p) => (
+    <span className={`inline-flex leading-[0] rounded flex-shrink-0 ${hl(p) ? `ring-2 ${T.ring} ring-offset-1 ring-offset-[#0C101B]` : ""}`}>
+      <ChampionPortrait name={p.champion} role={p.role} size={24} />
+    </span>
+  );
+  const nameClass = (p) => `block text-sm font-medium hover:text-cyan-400 truncate ${hl(p) ? T.name : ""}`;
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(false);
   const { isAdmin } = useAuth();
@@ -78,12 +92,12 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged 
     const raw = s.raw || {};
     const d = s.derived || {};
     return (
-      <tr key={`${team}-${p.player_id}`} className="border-t border-[#1B2438]">
-        <td className="py-2 pr-3">
+      <tr key={`${team}-${p.player_id}`} className={`border-t border-[#1B2438] ${hl(p) ? T.row : ""}`}>
+        <td className="py-2 pr-3 pl-1">
           <div className="flex items-center gap-2 min-w-0">
-            <ChampionPortrait name={p.champion} role={p.role} size={24} />
+            {portrait(p)}
             <div className="min-w-0">
-              <Link to={`/players/${p.player_id}`} className="block text-sm font-medium hover:text-cyan-400 truncate">{playerName(p.player_id)}</Link>
+              <Link to={`/players/${p.player_id}`} className={nameClass(p)}>{playerName(p.player_id)}</Link>
               <div className="text-[10px] font-mono-hud text-slate-500 truncate">{p.champion}</div>
             </div>
           </div>
@@ -109,10 +123,10 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged 
           Team {team} {won && <span className="text-[10px] font-mono-hud text-[#00E676] ml-1">WIN</span>}
         </div>
         {match.players.filter((p) => p.team === team).map((p) => (
-          <div key={`${team}-${p.player_id}`} className="flex items-center gap-2 py-1.5 border-t border-[#1B2438]">
-            <ChampionPortrait name={p.champion} role={p.role} size={24} />
+          <div key={`${team}-${p.player_id}`} className={`flex items-center gap-2 py-1.5 px-1 border-t border-[#1B2438] ${hl(p) ? T.row : ""}`}>
+            {portrait(p)}
             <div className="min-w-0 flex-1">
-              <Link to={`/players/${p.player_id}`} className="block text-sm font-medium hover:text-cyan-400 truncate">{playerName(p.player_id)}</Link>
+              <Link to={`/players/${p.player_id}`} className={nameClass(p)}>{playerName(p.player_id)}</Link>
               <div className="text-[10px] font-mono-hud text-slate-500 truncate">{p.champion}</div>
             </div>
             <MmrChange p={p} size="text-xs" />
