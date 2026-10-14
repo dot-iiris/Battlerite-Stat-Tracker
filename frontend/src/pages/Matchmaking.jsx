@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "@/api";
 import { toast } from "sonner";
-import { Sliders, Zap, Users } from "lucide-react";
+import { Sliders, Zap, Users, X } from "lucide-react";
 import SeasonSelect, { newestSeason } from "@/components/SeasonSelect";
 
 const modes = [
@@ -10,21 +10,39 @@ const modes = [
   { key: "hybrid", label: "Hybrid Balance", desc: "60% MMR + 40% Role Synergy" },
 ];
 
+// The picked players (and format) are remembered in this browser for 30 minutes, so switching
+// format or visiting another page doesn't lose them.
+const POOL_KEY = "brstats.mm-pool";
+const POOL_MINUTES = 30;
+const loadPool = () => {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(POOL_KEY) || "null");
+    if (v && Date.now() - v.at < POOL_MINUTES * 60 * 1000) return v;
+  } catch { /* private window etc. */ }
+  return null;
+};
+const savePool = (ids, format) => {
+  try { window.localStorage.setItem(POOL_KEY, JSON.stringify({ ids: [...ids], format, at: Date.now() })); } catch { /* ignore */ }
+};
+
 export default function Matchmaking() {
   const [players, setPlayers] = useState([]);
-  const [selected, setSelected] = useState(new Set());
-  const [format, setFormat] = useState("2v2");
+  const [selected, setSelected] = useState(() => new Set(loadPool()?.ids || []));
+  const [format, setFormat] = useState(() => loadPool()?.format || "2v2");
   const [mode, setMode] = useState("hybrid");
   const [seasons, setSeasons] = useState([]);
   const [seasonId, setSeasonId] = useState("");
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(false);
-  const [avoidRepeats, setAvoidRepeats] = useState(true);
+  const [ranked, setRanked] = useState(true);   // unranked: avoid the players' recent teams
+
+  useEffect(() => { savePool(selected, format); }, [selected, format]);
 
   useEffect(() => {
     (async () => {
       const [p, s] = await Promise.all([api.get("/players"), api.get("/seasons")]);
       setPlayers(p.data);
+      setSelected((cur) => new Set([...cur].filter((id) => p.data.some((x) => x.id === id))));   // drop deleted players
       setSeasons(s.data);
       setSeasonId(newestSeason(s.data)?.id || "");   // the current season, else the newest
     })();
@@ -37,6 +55,7 @@ export default function Matchmaking() {
     const s = new Set(selected);
     if (s.has(id)) s.delete(id);
     else if (s.size < size) s.add(id);
+    else if (s.size > size) { toast.error(`${s.size - size} too many for ${format} - deselect some first`); return; }
     else { toast.error(`Only ${size} players for ${format}`); return; }
     setSelected(s);
   };
@@ -50,7 +69,7 @@ export default function Matchmaking() {
         format,
         mode,
         season_id: seasonId,
-        avoid_repeats: avoidRepeats,
+        avoid_repeats: !ranked,
       });
       setResult(data);
     } catch (err) {
@@ -74,7 +93,7 @@ export default function Matchmaking() {
           <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Format</label>
           <div className="flex gap-2">
             {["2v2", "3v3"].map((f) => (
-              <button key={f} onClick={() => { setFormat(f); setSelected(new Set()); setResult(null); }}
+              <button key={f} onClick={() => { setFormat(f); setResult(null); }}
                 className={`flex-1 px-3 py-2 font-mono-hud text-sm uppercase rounded border ${format === f ? "bg-cyan-400 text-black border-cyan-400 font-bold" : "bg-[#121828] border-[#1B2438] text-slate-300"}`}
                 data-testid={`mm-format-${f}`}>{f}</button>
             ))}
@@ -92,22 +111,33 @@ export default function Matchmaking() {
           <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId} withAll={false} remember={null}
             className="w-full bg-[#121828] border border-[#1B2438] rounded px-3 py-2.5 text-sm" data-testid="mm-season" />
         </div>
-        <label className="md:col-span-3 flex items-start gap-2 text-sm text-slate-300 cursor-pointer select-none">
-          <input type="checkbox" checked={avoidRepeats} onChange={(e) => { setAvoidRepeats(e.target.checked); setResult(null); }}
-            className="mt-1 accent-cyan-400" data-testid="mm-avoid-repeats" />
-          <span>
-            Avoid recent teams
-            <span className="block text-[10px] font-mono-hud text-slate-500">
-              Don't recreate a team from these players' last {format === "3v3" ? "2 games" : "game"} in {format} - the fairest other split is used
-            </span>
-          </span>
-        </label>
+        <div className="md:col-span-3">
+          <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Match</label>
+          <div className="flex gap-2 max-w-sm">
+            {[[true, "Ranked"], [false, "Unranked"]].map(([r, label]) => (
+              <button key={label} onClick={() => { setRanked(r); setResult(null); }}
+                className={`flex-1 px-3 py-2 font-mono-hud text-sm uppercase rounded border ${ranked === r ? "bg-cyan-400 text-black border-cyan-400 font-bold" : "bg-[#121828] border-[#1B2438] text-slate-300"}`}
+                data-testid={`mm-${label.toLowerCase()}`}>{label}</button>
+            ))}
+          </div>
+          <p className="text-[10px] font-mono-hud text-slate-500 mt-1">
+            {ranked ? "The fairest teams." : `Avoids the teams these players had in their last ${format === "3v3" ? "2 games" : "game"} in ${format} - the fairest other split is used.`}
+          </p>
+        </div>
       </div>
 
       <div className="hud-card p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-heading text-lg font-bold uppercase flex items-center gap-2"><Users className="w-4 h-4 text-cyan-400" /> Select Player Pool</h3>
-          <span className="text-xs font-mono-hud text-slate-400">{selected.size} / {size} selected</span>
+          <div className="flex items-center gap-3">
+            <span className={`text-xs font-mono-hud ${selected.size > size ? "text-[#FF2E55]" : "text-slate-400"}`}>{selected.size} / {size} selected</span>
+            {selected.size > 0 && (
+              <button onClick={() => { setSelected(new Set()); setResult(null); }} data-testid="mm-clear"
+                className="text-xs font-mono-hud uppercase tracking-wider text-slate-400 hover:text-[#FF2E55] flex items-center gap-1">
+                <X className="w-3.5 h-3.5" /> Clear
+              </button>
+            )}
+          </div>
         </div>
         {players.length === 0 ? (
           <div className="text-slate-500 text-sm font-mono-hud">Add players first.</div>
