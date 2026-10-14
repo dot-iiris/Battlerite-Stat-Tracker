@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import MatchDetails from "@/components/MatchDetails";
 import MmrChange from "@/components/MmrChange";
@@ -10,10 +11,11 @@ import { MatchCode } from "@/components/FormatFilter";
 //   focusPlayer:   that player's side shows first, as Win/Loss, with their MMR change
 //   focusChampion: the side that played that champion shows first; its picks are outlined
 //   limit:         rows shown before "Show all" (showAllButton=false to never show more)
+//   linkTo:        m => url - rows go to that page instead of opening in place
 export default function MatchList({
   matches, playerName, seasons = [], onChanged,
   focusPlayer = null, focusChampion = null,
-  limit = 10, showAllButton = true, emptyText = "No matches found.", testid = "match-list",
+  limit = 10, showAllButton = true, emptyText = "No matches found.", testid = "match-list", linkTo = null,
 }) {
   const [openId, setOpenId] = useState(null);
   const [showAll, setShowAll] = useState(false);
@@ -52,9 +54,11 @@ export default function MatchList({
           </span>
         );
 
+        const Row = linkTo ? Link : "button";
+        const rowProps = linkTo ? { to: linkTo(m) } : { type: "button", onClick: () => setOpenId(open ? null : m.id) };
         return (
           <div key={m.id} className={`bg-[#121828]/60 border rounded transition-colors ${open ? "border-cyan-400/50" : "border-[#1B2438] hover:border-cyan-400/40"}`}>
-            <button type="button" onClick={() => setOpenId(open ? null : m.id)} data-testid={`${testid}-${m.id}`}
+            <Row {...rowProps} data-testid={`${testid}-${m.id}`}
               className="w-full grid grid-cols-[auto_1fr] sm:grid-cols-[auto_1fr_auto] items-center gap-3 p-3 text-left">
               <div className="flex flex-col items-start gap-1.5">
                 {side ? (
@@ -78,10 +82,11 @@ export default function MatchList({
                 <MatchCode match={m} />
                 <span className="flex items-center gap-1">
                   {new Date(m.played_at).toLocaleDateString()}
-                  <ChevronDown className={`w-4 h-4 transition-transform ${open ? "rotate-180 text-cyan-400" : ""}`} />
+                  {linkTo ? <ChevronRight className="w-4 h-4" />
+                    : <ChevronDown className={`w-4 h-4 transition-transform ${open ? "rotate-180 text-cyan-400" : ""}`} />}
                 </span>
               </div>
-            </button>
+            </Row>
             {open && (
               <div className="px-3 pb-3">
                 <MatchDetails match={m} playerName={playerName} onChanged={onChanged}

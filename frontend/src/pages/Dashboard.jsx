@@ -97,7 +97,6 @@ export default function Dashboard() {
   const topPlayer = leaderboard[0];
 
   const playerNames = Object.fromEntries(players.map((p) => [p.id, p.name]));
-  const loadMatches = () => api.get("/matches", { params: { season_id: activeSeason?.id } }).then((r) => setMatches(r.data));
 
   return (
     <div className="space-y-8" data-testid="dashboard-page">
@@ -133,7 +132,7 @@ export default function Dashboard() {
             <div className="text-slate-500 text-sm py-6 text-center font-mono-hud">No matches logged yet. <Link to="/log" className="text-cyan-400 hover:underline">Log one</Link>.</div>
           ) : (
             <MatchList key={recentFormat} matches={matches.filter(byFormat(recentFormat))} playerName={(id) => playerNames[id] || "?"}
-              seasons={seasons} onChanged={loadMatches} limit={6} showAllButton={false}
+              limit={6} showAllButton={false} linkTo={(m) => `/matches?match=${m.id}`}
               emptyText={`No ${recentFormat} matches yet.`} testid="dashboard-recent" />
           )}
         </div>
