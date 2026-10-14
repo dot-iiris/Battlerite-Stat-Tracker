@@ -6,7 +6,8 @@ import { invalidateChampionStats } from "@/lib/championStats";
 
 const STAT_FIELDS = ["score", "damage", "protection", "disables"];
 const SHORT = { score: "score", damage: "dmg", protection: "prot", disables: "disables" };
-const emptySlot = () => ({ player_id: "", champion: "", score: "", damage: "", protection: "", disables: "" });
+const emptySlot = () => ({ name: "", player_id: "", champion: "", score: "", damage: "", protection: "", disables: "" });
+const norm = (s) => (s || "").trim().toLowerCase();
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -31,26 +32,45 @@ export default function LogMatch() {
     setShot(null);
   };
 
-  // Read the scoreboard: fills in champions, stats and the round score for the picked players
+  // Read the scoreboard. With every player picked, it's matched to them; otherwise the players
+  // are found by name among everyone on the site (unknown names become new players).
   const readShot = async (file) => {
     if (!file) return;
     const all = [...teamA, ...teamB];
-    if (all.some((s) => !s.player_id)) { toast.error("Pick every player first - the screenshot is matched to them by name"); return; }
+    const picked = all.every((s) => s.player_id);
     const form = new FormData();
     form.append("file", file);
-    form.append("team_a", teamA.map((s) => s.player_id).join(","));
-    form.append("team_b", teamB.map((s) => s.player_id).join(","));
+    if (picked) {
+      form.append("team_a", teamA.map((s) => s.player_id).join(","));
+      form.append("team_b", teamB.map((s) => s.player_id).join(","));
+    }
     setReading(true);
     try {
       const { data } = await api.post("/screenshots/read", form);
       dropShot();
+      if (data.detected) {
+        const toSlot = (d) => {
+          const p = players.find((x) => x.id === d.player_id);
+          const out = { ...emptySlot(), name: p ? p.name : (d.ocr_name || ""), player_id: p ? p.id : "", champion: d.champion || "" };
+          for (const f of STAT_FIELDS) out[f] = d.stats?.[f] == null ? "" : String(d.stats[f]);
+          return out;
+        };
+        setFormat(data.format);
+        setTeamA(data.slots.A.map(toSlot));
+        setTeamB(data.slots.B.map(toSlot));
+        if (data.team_a_rounds != null && data.team_b_rounds != null) { setTeamARounds(data.team_a_rounds); setTeamBRounds(data.team_b_rounds); }
+        setShot(data);
+        const fresh = [...data.slots.A, ...data.slots.B].filter((d) => !d.player_id).length;
+        toast.success(`Players found from the screenshot${fresh ? ` (${fresh} new)` : ""} - check them before recording`);
+        return;
+      }
       const fill = (slot) => {
         const r = data.players[slot.player_id] || {};
         const out = { ...slot, champion: r.champion || slot.champion };
         for (const f of STAT_FIELDS) out[f] = r.stats?.[f] == null ? "" : String(r.stats[f]);
         return out;
       };
-      const filled = all.map(fill);
+      const filled = all.map(fill);   // (picked players keep their names)
       const teamOf = (s, i) => data.teams?.[s.player_id] || (i < teamA.length ? "A" : "B");
       const a = filled.filter((s, i) => teamOf(s, i) === "A");
       const b = filled.filter((s, i) => teamOf(s, i) === "B");
@@ -89,18 +109,24 @@ export default function LogMatch() {
 
   const getChampRole = (name) => champions.find((c) => c.name === name)?.role || "";
 
-  // Players already picked anywhere in the match
-  const usedPlayers = new Set([...teamA, ...teamB].map((s) => s.player_id).filter(Boolean));
+  // How many times each player is picked in the match (to flag doubles)
+  const usedPlayers = new Map();
+  for (const s of [...teamA, ...teamB]) if (s.player_id) usedPlayers.set(s.player_id, (usedPlayers.get(s.player_id) || 0) + 1);
   // Champions already picked per team (same-team mirror forbidden)
   const usedChampsA = new Set(teamA.map((s) => s.champion).filter(Boolean));
   const usedChampsB = new Set(teamB.map((s) => s.champion).filter(Boolean));
 
+  // A typed name picks the player with that name (or in-game name); anything else is a new player
+  const findPlayer = (name) => players.find((p) => norm(p.name) === norm(name)) || players.find((p) => p.ign && norm(p.ign) === norm(name));
+
   const setSlot = (team, idx, key, val) => {
     const setter = team === "A" ? setTeamA : setTeamB;
     const arr = team === "A" ? [...teamA] : [...teamB];
-    arr[idx] = { ...arr[idx], [key]: val };
+    const before = arr[idx].player_id;
+    arr[idx] = key === "name" ? { ...arr[idx], name: val, player_id: findPlayer(val)?.id || "" } : { ...arr[idx], [key]: val };
     setter(arr);
-    if (key === "player_id" && shot) {   // the screenshot was matched to the old line-up
+    // a screenshot matched to picked players no longer fits once they change (fixing a detected one is fine)
+    if (key === "name" && shot && !shot.detected && arr[idx].player_id !== before) {
       dropShot();
       toast("Players changed - read the screenshot again");
     }
@@ -109,12 +135,25 @@ export default function LogMatch() {
   const submit = async (e) => {
     e.preventDefault();
     if (teamARounds === teamBRounds) { toast.error("Rounds cannot be tied"); return; }
-    const allSlots = [...teamA.map((s, i) => ({ ...s, team: "A" })), ...teamB.map((s, i) => ({ ...s, team: "B" }))];
+    let allSlots = [...teamA.map((s) => ({ ...s, team: "A" })), ...teamB.map((s) => ({ ...s, team: "B" }))];
     for (const s of allSlots) {
-      if (!s.player_id || !s.champion) { toast.error("Fill all player/champion slots"); return; }
+      if (!s.name.trim() || !s.champion) { toast.error("Fill all player/champion slots"); return; }
     }
-    const pids = allSlots.map((s) => s.player_id);
-    if (new Set(pids).size !== pids.length) { toast.error("A player can only appear once per match"); return; }
+    const keys = allSlots.map((s) => s.player_id || `new:${norm(s.name)}`);
+    if (new Set(keys).size !== keys.length) { toast.error("A player can only appear once per match"); return; }
+    const fresh = allSlots.filter((s) => !s.player_id);
+    if (fresh.length) {
+      if (!window.confirm(`Create ${fresh.length === 1 ? "a new player" : `${fresh.length} new players`}: ${fresh.map((s) => s.name.trim()).join(", ")}?`)) return;
+      try {
+        const made = {};
+        for (const s of fresh) made[norm(s.name)] = (await api.post("/players", { name: s.name.trim() })).data;
+        setPlayers((cur) => [...cur, ...Object.values(made)].sort((a, b) => a.name.localeCompare(b.name)));
+        allSlots = allSlots.map((s) => (s.player_id ? s : { ...s, player_id: made[norm(s.name)].id }));
+      } catch (err) {
+        toast.error(err?.response?.data?.detail || "Couldn't create the new players");
+        return;
+      }
+    }
     for (const label of ["A", "B"]) {
       const champs = allSlots.filter((s) => s.team === label).map((s) => s.champion);
       if (new Set(champs).size !== champs.length) { toast.error(`Team ${label} cannot pick the same champion twice`); return; }
@@ -159,15 +198,22 @@ export default function LogMatch() {
       <div className="space-y-3">
         {roster.map((slot, i) => (
           <div key={`${side}-${i}`} className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <select
-              value={slot.player_id}
-              onChange={(e) => setSlot(side, i, "player_id", e.target.value)}
-              className="bg-[#121828] border border-[#1B2438] focus:border-cyan-400 focus:outline-none rounded px-2 py-2 text-sm"
-              data-testid={`slot-player-${side}-${i}`}
-            >
-              <option value="">Select player…</option>
-              {players.map((p) => <option key={p.id} value={p.id} disabled={p.id !== slot.player_id && usedPlayers.has(p.id)}>{p.name}{p.id !== slot.player_id && usedPlayers.has(p.id) ? " (already picked)" : ""}</option>)}
-            </select>
+            <div className="min-w-0">
+              <input
+                value={slot.name}
+                onChange={(e) => setSlot(side, i, "name", e.target.value)}
+                list="log-players" placeholder="Player name…" autoComplete="off"
+                className={`w-full bg-[#121828] border focus:border-cyan-400 focus:outline-none rounded px-2 py-2 text-sm ${
+                  slot.name.trim() && !slot.player_id ? "border-amber-400/60" : "border-[#1B2438]"}`}
+                data-testid={`slot-player-${side}-${i}`}
+              />
+              {slot.name.trim() && !slot.player_id && (
+                <div className="text-[10px] font-mono-hud text-amber-400 mt-0.5" data-testid={`slot-new-${side}-${i}`}>New player - created when you record</div>
+              )}
+              {slot.player_id && usedPlayers.get(slot.player_id) > 1 && (
+                <div className="text-[10px] font-mono-hud text-[#FF2E55] mt-0.5">Already in this match</div>
+              )}
+            </div>
             <select
               value={slot.champion}
               onChange={(e) => setSlot(side, i, "champion", e.target.value)}
@@ -258,11 +304,14 @@ export default function LogMatch() {
                 data-testid="log-read-shot">
                 <ImagePlus className="w-4 h-4" /> {reading ? "Reading…" : "Fill from screenshot"}
               </button>
-              <span>Optional: pick the players, then add the final scoreboard (Average Total tab) to fill in champions, stats and the score.</span>
+              <span>Optional: add the final scoreboard (Average Total tab) to fill in the players, champions, stats and score. Picking the players first makes the match by name more reliable.</span>
             </div>
           )}
         </div>
 
+        <datalist id="log-players">
+          {players.filter((p) => !usedPlayers.has(p.id)).map((p) => <option key={p.id} value={p.name} />)}
+        </datalist>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {renderTeam("A", teamA, "A", "text-cyan-400")}
           {renderTeam("B", teamB, "B", "text-[#FF2E55]")}
