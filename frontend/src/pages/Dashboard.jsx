@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import api from "@/api";
 import { Trophy, Swords, Users, Activity, Flame } from "lucide-react";
 import SeasonCountdown from "@/components/SeasonCountdown";
-import FormatFilter, { byFormat, MatchCode } from "@/components/FormatFilter";
+import FormatFilter, { byFormat } from "@/components/FormatFilter";
+import MatchList from "@/components/MatchList";
 
 function Stat({ label, value, icon: Icon, accent = "cyan" }) {
   const color = { cyan: "text-cyan-400", amber: "text-[#FFB800]", crimson: "text-[#FF2E55]", emerald: "text-[#00E676]" }[accent];
@@ -96,8 +97,7 @@ export default function Dashboard() {
   const topPlayer = leaderboard[0];
 
   const playerNames = Object.fromEntries(players.map((p) => [p.id, p.name]));
-  const teamNames = (m, team) =>
-    m.players.filter((p) => p.team === team).map((p) => playerNames[p.player_id] || "?").join(", ");
+  const loadMatches = () => api.get("/matches", { params: { season_id: activeSeason?.id } }).then((r) => setMatches(r.data));
 
   return (
     <div className="space-y-8" data-testid="dashboard-page">
@@ -132,43 +132,22 @@ export default function Dashboard() {
           {matches.length === 0 ? (
             <div className="text-slate-500 text-sm py-6 text-center font-mono-hud">No matches logged yet. <Link to="/log" className="text-cyan-400 hover:underline">Log one</Link>.</div>
           ) : (
-            <div className="space-y-2">
-              {matches.filter(byFormat(recentFormat)).length === 0 &&
-                <div className="text-slate-500 text-sm py-6 text-center font-mono-hud">No {recentFormat} matches yet.</div>}
-              {matches.filter(byFormat(recentFormat)).slice(0, 6).map((m) => (
-                <Link key={m.id} to={`/matches?match=${m.id}`} data-testid={`dashboard-recent-${m.id}`}
-                  className="flex items-center justify-between p-3 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
-                    <MatchCode match={m} className="hidden sm:inline" />
-                    <span className="font-mono-hud text-sm whitespace-nowrap">
-                      <span className={m.winner_team === "A" ? "text-[#00E676]" : "text-slate-400"}>{m.team_a_rounds}</span>
-                      <span className="text-slate-600 mx-2">:</span>
-                      <span className={m.winner_team === "B" ? "text-[#00E676]" : "text-slate-400"}>{m.team_b_rounds}</span>
-                    </span>
-                    <span className="text-xs min-w-0 truncate" data-testid={`dashboard-recent-players-${m.id}`}>
-                      <span className={m.winner_team === "A" ? "text-slate-100" : "text-slate-500"}>{teamNames(m, "A")}</span>
-                      <span className="text-slate-600 mx-1.5">vs</span>
-                      <span className={m.winner_team === "B" ? "text-slate-100" : "text-slate-500"}>{teamNames(m, "B")}</span>
-                    </span>
-                  </div>
-                  <span className="text-xs font-mono-hud text-slate-500 whitespace-nowrap pl-2">{new Date(m.played_at).toLocaleDateString()}</span>
-                </Link>
-              ))}
-            </div>
+            <MatchList key={recentFormat} matches={matches.filter(byFormat(recentFormat))} playerName={(id) => playerNames[id] || "?"}
+              seasons={seasons} onChanged={loadMatches} limit={6} showAllButton={false}
+              emptyText={`No ${recentFormat} matches yet.`} testid="dashboard-recent" />
           )}
         </div>
 
         <div className="hud-card p-6 lg:col-span-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-slate-100 flex items-center gap-2"><Trophy className="w-4 h-4 text-[#FFB800]" /> Top 5 Ladder</h2>
+            <h2 className="font-heading text-xl font-bold uppercase tracking-wide text-slate-100 flex items-center gap-2"><Trophy className="w-4 h-4 text-[#FFB800]" /> Top 6 Ladder</h2>
             <Link to="/leaderboard" className="text-xs font-mono-hud uppercase text-cyan-400 hover:text-cyan-300">Full →</Link>
           </div>
           {leaderboard.length === 0 ? (
             <div className="text-slate-500 text-sm py-6 text-center font-mono-hud">No ranked players yet.</div>
           ) : (
             <div className="space-y-2">
-              {leaderboard.slice(0, 5).map((p) => (
+              {leaderboard.slice(0, 6).map((p) => (
                 <Link key={p.player_id} to={`/players/${p.player_id}`} className="flex items-center gap-3 p-2.5 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
                   <span className="font-mono-hud font-extrabold text-lg text-[#FFB800] w-8">#{p.rank}</span>
                   <span className="flex-1 font-medium">{p.name}</span>
