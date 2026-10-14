@@ -98,7 +98,7 @@ export default function Matchmaking() {
           <span>
             Avoid recent teams
             <span className="block text-[10px] font-mono-hud text-slate-500">
-              Don't recreate a team from these players' last {format === "3v3" ? "3 games" : "game"} in {format} - the fairest other split is used
+              Don't recreate a team from these players' last {format === "3v3" ? "2 games" : "game"} in {format} - the fairest other split is used
             </span>
           </span>
         </label>
