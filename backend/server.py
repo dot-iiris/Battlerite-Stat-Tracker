@@ -292,6 +292,11 @@ def compute_player_deltas(team_a_mmrs: dict, team_b_mmrs: dict,
     return out
 
 
+async def _no_docs():
+    return
+    yield
+
+
 # --------- Startup ---------
 @app.on_event("startup")
 async def startup():
@@ -349,10 +354,11 @@ async def startup():
         # Sync roster: upsert every champion + fix roles on existing docs
         for c in CHAMPIONS:
             await db.champions.update_one({"name": c["name"]}, {"$set": c}, upsert=True)
-        # Migrate historical matches when a champion's role has changed
+        # Migrate historical matches when a champion's role has changed. This reads every match, so it
+        # only runs with CHAMPION_ROLE_SYNC=true in the settings (set it once after changing a role).
         current_roles = {c["name"]: c["role"] for c in CHAMPIONS}
-        matches_cursor = db.matches.find({})
-        async for m in matches_cursor:
+        matches_cursor = db.matches.find({}) if _on("CHAMPION_ROLE_SYNC") else None
+        async for m in (matches_cursor or _no_docs()):
             changed = False
             new_players = []
             for p in m["players"]:
@@ -1123,15 +1129,38 @@ async def _insert_match(data: MatchCreate, code: Optional[str] = None) -> dict:
 
 @api_router.get("/matches")
 async def list_matches(season_id: Optional[str] = None, player_id: Optional[str] = None,
-                       format: Optional[str] = None):
-    q = {}
-    q.update(await season_filter(season_id))
+                       format: Optional[str] = None, q: Optional[str] = None,
+                       limit: Optional[int] = None, offset: int = 0):
+    """Newest first. With `limit`: one page as {"items", "total"} (the Matches page); without it,
+    every match as a list (dashboard, player pages). `q` searches player names, champions, notes and
+    match codes (old ones too)."""
+    query = {}
+    query.update(await season_filter(season_id))
     if player_id:
-        q["players.player_id"] = player_id
+        query["players.player_id"] = player_id
     if format and format != "all":
-        q["format"] = format
-    docs = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
-    return docs
+        query["format"] = format
+    text = (q or "").strip().lstrip("#")
+    if text:
+        rx = {"$regex": re.escape(text), "$options": "i"}
+        named = [p["id"] for p in await db.players.find({"$or": [{"name": rx}, {"ign": rx}]}, {"_id": 0, "id": 1}).to_list(1000)]
+        query["$or"] = [{"notes": rx}, {"players.champion": rx}, {"discord_match_id": rx}, {"legacy_refs": rx},
+                        {"players.player_id": {"$in": named}}]
+    cursor = db.matches.find(query, {"_id": 0}).sort([("played_at", -1), ("id", -1)])
+    if limit is None:
+        return await cursor.to_list(10000)
+    limit = max(1, min(int(limit), 200))
+    items = await cursor.skip(max(0, int(offset))).limit(limit).to_list(limit)
+    return {"items": items, "total": await db.matches.count_documents(query)}
+
+
+@api_router.get("/matches/{mid}")
+async def get_match(mid: str):
+    """One match by its id or code (e.g. a link from the Discord match log to an old match)."""
+    m = await db.matches.find_one(match_ref_query(mid), {"_id": 0})
+    if not m:
+        raise HTTPException(404, "Match not found")
+    return m
 
 
 @api_router.post("/admin/recompute-all")
@@ -1235,7 +1264,7 @@ async def leaderboard(season_id: Optional[str] = None, format: Optional[str] = N
     q = {"season_id": season_id}
     if format and format in ("1v1", "2v2", "3v3"):   # 1v1 is retired, but old 1v1 games can still be viewed
         q["format"] = format
-    matches = await db.matches.find(q, {"_id": 0}).sort("played_at", 1).to_list(10000)
+    matches = await db.matches.find(q, {"_id": 0, "players.stats": 0}).sort("played_at", 1).to_list(10000)
 
     stats = {}
     for p in players:
@@ -1320,7 +1349,7 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
 
     q = {"players.player_id": pid}
     q.update(await season_filter(season_id))
-    matches = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
+    matches = await db.matches.find(q, {"_id": 0, "players.stats": 0}).sort("played_at", -1).to_list(10000)
 
     # Compute all-time peak across every season (even if filtering current view by one season)
     all_seasons = await db.seasons.find({}, {"_id": 0}).to_list(1000)
@@ -1482,7 +1511,7 @@ async def matrix(season_id: Optional[str] = None):
     players = await db.players.find({}, {"_id": 0}).to_list(1000)
     q = {}
     q.update(await season_filter(season_id))
-    matches = await db.matches.find(q, {"_id": 0}).to_list(10000)
+    matches = await db.matches.find(q, {"_id": 0, "players.stats": 0}).to_list(10000)
 
     # matrix[a][b] = {matches, a_wins}
     m = {}
@@ -1516,7 +1545,7 @@ async def champion_matrix(season_id: Optional[str] = None):
     """Champion vs Champion winrate when facing each other across teams."""
     q = {}
     q.update(await season_filter(season_id))
-    matches = await db.matches.find(q, {"_id": 0}).to_list(10000)
+    matches = await db.matches.find(q, {"_id": 0, "players.stats": 0}).to_list(10000)
 
     # Start from the full roster so unplayed champions still appear
     roster = await db.champions.find({}, {"_id": 0}).to_list(1000)
@@ -1569,7 +1598,7 @@ async def recap(days: int = 7, season_id: Optional[str] = None):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     q = {"played_at": {"$gte": cutoff}}
     q.update(await season_filter(season_id))
-    matches = await db.matches.find(q, {"_id": 0}).sort("played_at", 1).to_list(10000)
+    matches = await db.matches.find(q, {"_id": 0, "players.stats": 0}).sort("played_at", 1).to_list(10000)
 
     all_players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0}).to_list(1000)}
 
