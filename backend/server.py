@@ -2500,6 +2500,43 @@ def _read_screenshot(data: bytes, team_a: list, team_b: list, refs) -> dict:
     return {"parsed": parsed, "prefill": scoreboard.assign_to_roster(parsed, team_a, team_b)}
 
 
+DETECT_MIN_SIMILARITY = 0.6   # below this a scoreboard name is treated as a player not on the site yet
+
+def _detect_screenshot(data: bytes, everyone: list, refs) -> dict:
+    """Read a scoreboard when the players aren't known yet: match each row's name to the closest
+    player on the site (name or in-game name). Your Team becomes Team A."""
+    import scoreboard
+    parsed = scoreboard.parse_scoreboard(data, [c["name"] for c in CHAMPIONS], refs)
+    your, enemy = parsed.get("your_team") or [], parsed.get("enemy_team") or []
+    warnings = list(parsed.get("warnings") or [])
+    rows = [("A", r) for r in your] + [("B", r) for r in enemy]
+    pairs = sorted(((max((scoreboard.similarity(r.get("name") or "", n) for n in p["names"] if n), default=0.0), ri, pi)
+                    for ri, (_, r) in enumerate(rows) for pi, p in enumerate(everyone)), reverse=True)
+    taken_rows, taken_players, match = set(), set(), {}
+    for score, ri, pi in pairs:   # best matches first, each row and player used once
+        if score < DETECT_MIN_SIMILARITY:
+            break
+        if ri in taken_rows or pi in taken_players:
+            continue
+        taken_rows.add(ri); taken_players.add(pi); match[ri] = (everyone[pi]["id"], round(score, 2))
+    slots, players, teams = {"A": [], "B": []}, {}, {}
+    for ri, (side, r) in enumerate(rows):
+        pid, conf = match.get(ri, (None, 0.0))
+        info = {"champion": r.get("champion"), "champion_source": r.get("champion_source"), "stats": r.get("stats"),
+                "ocr_name": r.get("name"), "name_confidence": conf, "icon_box": r.get("icon_box")}
+        slots[side].append({"player_id": pid, **{k: info[k] for k in ("ocr_name", "name_confidence", "champion", "stats")}})
+        key = pid or f"row:{side}{len(slots[side]) - 1}"   # rows for new players: matched by name when saved
+        players[key] = info
+        if pid:
+            teams[pid] = side
+        if not pid and r.get("name"):
+            warnings.append(f"'{r.get('name')}' isn't a player on the site yet - check the name before recording")
+    prefill = {"players": players, "teams": teams,
+               "team_a_rounds": parsed.get("your_team_rounds"), "team_b_rounds": parsed.get("enemy_team_rounds"),
+               "your_team_side": "A", "warnings": warnings}
+    return {"parsed": parsed, "prefill": prefill, "slots": slots}
+
+
 def _icon_crops(data: bytes, prefill: dict, confirmed: dict) -> list:
     """[(champion, player_id, png bytes)] for each confirmed player's portrait."""
     import scoreboard
@@ -2782,7 +2819,7 @@ def _rounds_agree(read_a, read_b, a: int, b: int) -> bool:
 
 
 @api_router.post("/screenshots/read")
-async def read_screenshot(file: UploadFile = File(...), team_a: str = Form(...), team_b: str = Form(...),
+async def read_screenshot(file: UploadFile = File(...), team_a: str = Form(""), team_b: str = Form(""),
                           match_id: Optional[str] = Form(None), user: dict = Depends(admin_required)):
     """Read a scoreboard for the Log Match / Edit Match forms. The screenshot is kept for a few
     hours and attached when the form is saved (with screenshot_id); what's saved is compared with
@@ -2790,7 +2827,8 @@ async def read_screenshot(file: UploadFile = File(...), team_a: str = Form(...),
     already logged, the screenshot's round score must be that match's."""
     a_ids = [x for x in team_a.split(",") if x]
     b_ids = [x for x in team_b.split(",") if x]
-    if not a_ids or len(a_ids) != len(b_ids):
+    detect = not a_ids and not b_ids and not match_id   # Log Match without players picked: find them
+    if not detect and (not a_ids or len(a_ids) != len(b_ids)):
         raise HTTPException(400, "Pick every player in both teams first")
     match = None
     if match_id:
@@ -2814,13 +2852,22 @@ async def read_screenshot(file: UploadFile = File(...), team_a: str = Form(...),
             label = f"match #{used['discord_match_id']}" if used and used.get("discord_match_id") else \
                 (f"the match on {used['played_at'][:10]}" if used else "a result still being confirmed")
             raise HTTPException(409, f"This exact screenshot is already attached to {label}")
-    roster_a, roster_b = await _roster({"team_a": a_ids, "team_b": b_ids})
     try:
-        res = await _run_ocr(_read_screenshot, data, roster_a, roster_b, await _get_icon_refs())
+        if detect:
+            everyone = [{"id": p["id"], "names": [p.get("name"), p.get("ign")]}
+                        for p in await db.players.find({}, {"_id": 0, "id": 1, "name": 1, "ign": 1}).to_list(5000)]
+            res = await _run_ocr(_detect_screenshot, data, everyone, await _get_icon_refs())
+        else:
+            roster_a, roster_b = await _roster({"team_a": a_ids, "team_b": b_ids})
+            res = await _run_ocr(_read_screenshot, data, roster_a, roster_b, await _get_icon_refs())
     except ImportError:
         raise HTTPException(503, "Screenshot reading isn't installed on the server")
     pre, parsed = res["prefill"], res["parsed"] or {}
-    if not pre.get("players"):
+    if detect:
+        sizes = {len(res["slots"]["A"]), len(res["slots"]["B"])}
+        if len(sizes) != 1 or sizes.pop() not in (2, 3):
+            raise HTTPException(400, "; ".join(pre.get("warnings") or []) or "Couldn't find both teams on that screenshot")
+    elif not pre.get("players"):
         raise HTTPException(400, "; ".join(pre.get("warnings") or []) or "Couldn't read that screenshot")
     if match:
         ra, rb = pre.get("team_a_rounds"), pre.get("team_b_rounds")
@@ -2843,9 +2890,15 @@ async def read_screenshot(file: UploadFile = File(...), team_a: str = Form(...),
         "file": f"{sid}{ext}", "uploaded_at": _now_iso(), "uploaded_by": user.get("name") or user.get("email"),
         "staged": True, "staged_for": match_id, "read": {"prefill": pre, "image_size": parsed.get("image_size")},
     })
-    return {"screenshot_id": sid, "players": pre.get("players") or {}, "teams": pre.get("teams") or {},
-            "team_a_rounds": pre.get("team_a_rounds"), "team_b_rounds": pre.get("team_b_rounds"),
-            "warnings": pre.get("warnings") or []}
+    out = {"screenshot_id": sid, "players": pre.get("players") or {}, "teams": pre.get("teams") or {},
+           "team_a_rounds": pre.get("team_a_rounds"), "team_b_rounds": pre.get("team_b_rounds"),
+           "warnings": pre.get("warnings") or []}
+    if detect:
+        out.update(detected=True, format=f"{len(res['slots']['A'])}v{len(res['slots']['A'])}", slots=res["slots"])
+        out["players"] = {k: v for k, v in out["players"].items() if not k.startswith("row:")}
+        for v in out["players"].values():
+            v.pop("icon_box", None)
+    return out
 
 
 async def _staged_screenshot(sid: str) -> dict:
@@ -2861,7 +2914,22 @@ async def _attach_screenshot(mid: str, sid: str, user: dict):
     shot = await _staged_screenshot(sid)
     final = await db.matches.find_one({"id": mid}, {"_id": 0})
     read = shot.get("read") or {}
-    pm = {"id": sid, "prefill": read.get("prefill") or {}, "ocr": {"image_size": read.get("image_size")}}
+    prefill = read.get("prefill") or {}
+    unkeyed = {k: v for k, v in (prefill.get("players") or {}).items() if k.startswith("row:")}
+    if unkeyed:   # detected rows for players created when the match was saved: match them by name
+        import scoreboard
+        rp = dict(prefill["players"])
+        names = {p["id"]: [p.get("name"), p.get("ign")] for p in await db.players.find(
+            {"id": {"$in": [x["player_id"] for x in final["players"]]}}, {"_id": 0, "id": 1, "name": 1, "ign": 1}).to_list(10)}
+        for key, info in unkeyed.items():
+            free = [pid for pid in names if pid not in rp]
+            best = max(free, default=None, key=lambda pid: max((scoreboard.similarity(info.get("ocr_name") or "", n)
+                                                              for n in names[pid] if n), default=0.0))
+            if best:
+                rp[best] = rp.pop(key)
+                prefill.setdefault("teams", {})[best] = "A" if key.startswith("row:A") else "B"
+        prefill = {**prefill, "players": rp}
+    pm = {"id": sid, "prefill": prefill, "ocr": {"image_size": read.get("image_size")}}
     try:
         await _record_ocr_feedback(pm, final)
         await _learn_icons(pm, {p["player_id"]: p["champion"] for p in final["players"]})
