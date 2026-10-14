@@ -19,6 +19,7 @@ export default function Matchmaking() {
   const [seasonId, setSeasonId] = useState("");
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(false);
+  const [avoidRepeats, setAvoidRepeats] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -49,6 +50,7 @@ export default function Matchmaking() {
         format,
         mode,
         season_id: seasonId,
+        avoid_repeats: avoidRepeats,
       });
       setResult(data);
     } catch (err) {
@@ -90,6 +92,16 @@ export default function Matchmaking() {
           <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId} withAll={false} remember={null}
             className="w-full bg-[#121828] border border-[#1B2438] rounded px-3 py-2.5 text-sm" data-testid="mm-season" />
         </div>
+        <label className="md:col-span-3 flex items-start gap-2 text-sm text-slate-300 cursor-pointer select-none">
+          <input type="checkbox" checked={avoidRepeats} onChange={(e) => { setAvoidRepeats(e.target.checked); setResult(null); }}
+            className="mt-1 accent-cyan-400" data-testid="mm-avoid-repeats" />
+          <span>
+            Avoid recent teams
+            <span className="block text-[10px] font-mono-hud text-slate-500">
+              Don't recreate a team from these players' last {format === "3v3" ? "3 games" : "game"} in {format} - the fairest other split is used
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="hud-card p-5">
@@ -118,6 +130,14 @@ export default function Matchmaking() {
 
       {result && (
         <div className="space-y-4" data-testid="mm-result">
+          {result.avoided_repeat && (
+            <div className="text-xs font-mono-hud text-[#FFB800]" data-testid="mm-avoided">
+              The fairest split would repeat a recent team, so the next fairest is shown.
+            </div>
+          )}
+          {result.all_splits_repeat && (
+            <div className="text-xs font-mono-hud text-slate-400">Every split repeats a recent team, so the fairest one is shown.</div>
+          )}
           <div className="hud-card p-5 grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
             <div><div className="text-xs font-mono-hud text-slate-400 uppercase tracking-wider">Balance Score</div><div className="font-mono-hud text-2xl font-black text-[#00E676]">{result.balance_score}</div></div>
             <div><div className="text-xs font-mono-hud text-slate-400 uppercase tracking-wider">MMR Diff</div><div className="font-mono-hud text-2xl font-black text-cyan-400">{result.mmr_diff}</div></div>
