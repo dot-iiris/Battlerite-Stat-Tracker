@@ -7,6 +7,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 import os
 import hashlib
+import math
 import threading
 import hmac
 import logging
@@ -1901,6 +1902,82 @@ async def recent_teams(player_ids: List[str], fmt: str) -> List[List[str]]:
             break
     return avoid
 
+# --------- Team balancing: role part ---------
+# BALANCE_ROLE_MODEL: "role_mmr" (default) - each player's hidden role MMR (general MMR plus how much
+# better/worse they do in that role than usual) decides the teams' best role line-ups; "spread" - the
+# old check of how varied the teams' most-played roles are.
+BALANCE_ROLE_MODEL = (os.environ.get("BALANCE_ROLE_MODEL") or "role_mmr").strip().lower()
+def _num_env(name, default, lo, hi):
+    try:
+        return min(hi, max(lo, float(os.environ.get(name) or default)))
+    except ValueError:
+        return default
+HYBRID_MMR_WEIGHT = _num_env("HYBRID_MMR_WEIGHT", 0.8, 0.0, 1.0)     # Hybrid: general MMR share (old: 0.6)
+SUPPORT_WEIGHT_2V2 = _num_env("SUPPORT_WEIGHT_2V2", 0.6, 0.0, 1.0)   # 2v2: the support's share of a line-up
+ROLE_PRIOR_GAMES = 15    # a role offset counts games/(games+15) - few games stay close to general MMR
+ROLE_OFFSET_CAP = 150
+ROLE_POINT_MMR = 1600 / math.log(10) / K_FACTOR   # 1 MMR point/game better than usual ~ this much MMR
+ROLES = ("Melee", "Ranged", "Support")
+
+
+async def role_offsets(pid: str) -> dict:
+    """How much better (+) or worse (-) a player does in each role than their own usual, in MMR.
+    From the MMR changes of their ranked games in every season (role = the champion played)."""
+    ranked_ids = {x["id"] for x in await db.seasons.find({"ranked": {"$ne": False}}, {"_id": 0, "id": 1}).to_list(1000)}
+    by_role = {r: [] for r in ROLES}
+    async for m in db.matches.find({"players.player_id": pid, "season_id": {"$in": list(ranked_ids)}},
+                                   {"_id": 0, "players": 1}):
+        for mp in m["players"]:
+            if mp["player_id"] == pid and counts_for_mmr(mp) and mp.get("elo_delta") is not None:
+                r = mp.get("role") or CHAMPION_ROLES.get(mp.get("champion"))
+                if r in by_role:
+                    by_role[r].append(mp["elo_delta"])
+    every = [d for ds in by_role.values() for d in ds]
+    if not every:
+        return {r: 0.0 for r in ROLES}
+    usual = sum(every) / len(every)
+    out = {}
+    for r, ds in by_role.items():
+        if not ds:
+            out[r] = 0.0
+            continue
+        raw = (sum(ds) / len(ds) - usual) * ROLE_POINT_MMR
+        trust = len(ds) / (len(ds) + ROLE_PRIOR_GAMES)
+        out[r] = max(-ROLE_OFFSET_CAP, min(ROLE_OFFSET_CAP, raw * trust))
+    return out
+
+
+def best_lineup(team: List[dict]) -> tuple:
+    """(strength, {player id: role}) of a team's best role line-up, from hidden role MMR.
+    3v3: one Melee, one Ranged, one Support. 2v2: a Support + a damage dealer (Melee or Ranged),
+    the support counting SUPPORT_WEIGHT_2V2."""
+    rm = lambda p, r: p["mmr"] + p["role_offsets"].get(r, 0.0)
+    if len(team) == 3:
+        best = None
+        for roles in permutations(ROLES):
+            v = sum(rm(p, r) for p, r in zip(team, roles)) / 3
+            if best is None or v > best[0]:
+                best = (v, {p["id"]: r for p, r in zip(team, roles)})
+        return best
+    if len(team) == 2:
+        best = None
+        for sup, dmg in ((team[0], team[1]), (team[1], team[0])):
+            dr = max(("Melee", "Ranged"), key=lambda r: rm(dmg, r))
+            v = SUPPORT_WEIGHT_2V2 * rm(sup, "Support") + (1 - SUPPORT_WEIGHT_2V2) * rm(dmg, dr)
+            if best is None or v > best[0]:
+                best = (v, {sup["id"]: "Support", dmg["id"]: dr})
+        return best
+    return (sum(p["mmr"] for p in team) / len(team), {})
+
+
+def role_fit_score(str_a: float, str_b: float, gen_a: float, gen_b: float) -> float:
+    """0-100: half for the two line-ups being equally strong, half for both teams being able to put
+    players on roles they're good at (line-up strength above the team's general MMR)."""
+    fair = max(0.0, 100.0 - abs(str_a - str_b) / 4.0)
+    skilled = max(0.0, min(100.0, 50.0 + ((str_a - gen_a) + (str_b - gen_b)) / 2.0 / 2.0))
+    return 0.5 * fair + 0.5 * skilled
+
+
 def role_synergy_score(roles: List[str]) -> float:
     """Higher is better. Reward role coverage."""
     unique = len(set(roles))
@@ -1936,6 +2013,8 @@ async def matchmaking(data: MatchmakingRequest):
                 if mp["player_id"] == pid:
                     role_counts[mp["role"]] = role_counts.get(mp["role"], 0) + 1
         p["preferred_role"] = max(role_counts, key=role_counts.get) if any(role_counts.values()) else "Melee"
+        if BALANCE_ROLE_MODEL != "spread":
+            p["role_offsets"] = await role_offsets(pid)   # hidden: removed before replying
         players[pid] = p
 
     ids = list(players.keys())
@@ -1956,26 +2035,43 @@ async def matchmaking(data: MatchmakingRequest):
         mmr_diff = abs(mmr_a - mmr_b)
         mmr_score = max(0.0, 100.0 - mmr_diff / 4.0)  # 400 diff => 0
 
-        syn_a = role_synergy_score([players[i]["preferred_role"] for i in team_a])
-        syn_b = role_synergy_score([players[i]["preferred_role"] for i in team_b])
-        syn_score = (syn_a + syn_b) / 2
+        roles_of = {}
+        if BALANCE_ROLE_MODEL == "spread":
+            syn_a = role_synergy_score([players[i]["preferred_role"] for i in team_a])
+            syn_b = role_synergy_score([players[i]["preferred_role"] for i in team_b])
+            syn_score = (syn_a + syn_b) / 2
+        else:   # role MMR: each team's best line-up
+            str_a, ra = best_lineup([players[i] for i in team_a])
+            str_b, rb = best_lineup([players[i] for i in team_b])
+            roles_of = {**ra, **rb}
+            syn_score = role_fit_score(str_a, str_b, mmr_a, mmr_b)
+            # per team: how well its players' roles suit them (shown as the team's synergy)
+            syn_a = max(0.0, min(100.0, 50.0 + (str_a - mmr_a) / 2.0))
+            syn_b = max(0.0, min(100.0, 50.0 + (str_b - mmr_b) / 2.0))
 
         if data.mode == "mmr":
             total = mmr_score
         elif data.mode == "synergy":
             total = syn_score
         else:
-            total = 0.6 * mmr_score + 0.4 * syn_score
+            total = HYBRID_MMR_WEIGHT * mmr_score + (1 - HYBRID_MMR_WEIGHT) * syn_score
+
+        def shown(i):   # role MMR stays hidden; with role MMR the suggested role is shown instead
+            p = {k: v for k, v in players[i].items() if k != "role_offsets"}
+            if i in roles_of:
+                p["preferred_role"] = roles_of[i]
+            return p
 
         entry = {
-            "team_a": [players[i] for i in team_a],
-            "team_b": [players[i] for i in team_b],
+            "team_a": [shown(i) for i in team_a],
+            "team_b": [shown(i) for i in team_b],
             "team_a_mmr": round(mmr_a, 2),
             "team_b_mmr": round(mmr_b, 2),
             "mmr_diff": round(mmr_diff, 2),
             "team_a_synergy": round(syn_a, 1),
             "team_b_synergy": round(syn_b, 1),
             "balance_score": round(total, 2),
+            "role_model": BALANCE_ROLE_MODEL if BALANCE_ROLE_MODEL == "spread" else "role_mmr",
             "win_probability_a": round(expected_score(mmr_a, mmr_b) * 100, 1),
         }
         if best is None or entry["balance_score"] > best["balance_score"]:
