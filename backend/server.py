@@ -1781,6 +1781,49 @@ class MatchmakingRequest(BaseModel):
     # teams (lists of player ids) not to repeat - e.g. the same players' previous match. The best split
     # without any of them is used; only if every split repeats one is the best overall used.
     avoid_teams: Optional[List[List[str]]] = None
+    # avoid the teams from each player's recent games in this format (REPEAT_DEPTH games back)
+    avoid_repeats: bool = False
+
+REPEAT_DEPTH = {"2v2": 1, "3v3": 3}   # how many of each player's recent games to avoid repeating
+
+
+def _when(v) -> datetime:
+    try:
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+async def recent_teams(player_ids: List[str], fmt: str) -> List[List[str]]:
+    """Teams from each of these players' last REPEAT_DEPTH games in this format that could happen
+    again with this line-up. Games are logged matches, plus (with the bot) matches launched from a
+    lobby that haven't been logged yet."""
+    depth, ids = REPEAT_DEPTH.get(fmt, 1), set(player_ids)
+    cap = depth * len(ids) * 2 + 10
+    games, codes = [], set()
+    async for m in db.matches.find({"format": fmt, "players.player_id": {"$in": list(ids)}},
+                                   {"_id": 0, "played_at": 1, "discord_match_id": 1, "players.player_id": 1, "players.team": 1}
+                                   ).sort("played_at", -1).limit(cap):
+        games.append((_when(m.get("played_at")), [[p["player_id"] for p in m["players"] if p["team"] == t] for t in "AB"]))
+        codes.add(m.get("discord_match_id"))
+    async for l in db.lineups.find({"format": fmt, "players": {"$in": list(ids)}}, {"_id": 0}).sort("at", -1).limit(cap):
+        if l.get("code") not in codes:   # launched, not logged yet
+            games.append((_when(l.get("at")), [l["team_a"], l["team_b"]]))
+    games.sort(key=lambda g: g[0], reverse=True)
+    seen, avoid = dict.fromkeys(ids, 0), []
+    for _, teams in games:
+        involved = [pid for pid in ids if any(pid in t for t in teams)]
+        if not any(seen[pid] < depth for pid in involved):
+            continue   # already past this game for everyone in it
+        for pid in involved:
+            seen[pid] += 1
+        for t in teams:
+            if t and set(t) <= ids and sorted(t) not in avoid:
+                avoid.append(sorted(t))
+        if all(v >= depth for v in seen.values()):
+            break
+    return avoid
 
 def role_synergy_score(roles: List[str]) -> float:
     """Higher is better. Reward role coverage."""
@@ -1823,6 +1866,8 @@ async def matchmaking(data: MatchmakingRequest):
     best = None
     best_fresh = None   # best split that doesn't repeat an avoided team
     avoid = {frozenset(t) for t in (data.avoid_teams or []) if t}
+    if data.avoid_repeats:
+        avoid |= {frozenset(t) for t in await recent_teams(data.player_ids, data.format)}
 
     for combo in combinations(ids, team_size):
         team_a = list(combo)
@@ -1866,6 +1911,8 @@ async def matchmaking(data: MatchmakingRequest):
     if avoid:
         chosen = best_fresh or best
         chosen["avoided_repeat"] = best_fresh is not None and best_fresh is not best
+        chosen["recent_teams_avoided"] = len(avoid)
+        chosen["all_splits_repeat"] = best_fresh is None
         return chosen
     return best
 
