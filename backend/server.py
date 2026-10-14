@@ -1784,7 +1784,7 @@ class MatchmakingRequest(BaseModel):
     # avoid the teams from each player's recent games in this format (REPEAT_DEPTH games back)
     avoid_repeats: bool = False
 
-REPEAT_DEPTH = {"2v2": 1, "3v3": 3}   # how many of each player's recent games to avoid repeating
+REPEAT_DEPTH = {"2v2": 1, "3v3": 2}   # how many of each player's recent games to avoid repeating
 
 
 def _when(v) -> datetime:
