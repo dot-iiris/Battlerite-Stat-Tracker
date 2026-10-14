@@ -48,7 +48,7 @@ export default function MatchList({
                   <ChampionPortrait name={p.champion} role={p.role} size={22} linkToProfile={false} />
                 </span>
                 <Link to={`/players/${p.player_id}`} data-testid={`${testid}-player-${p.player_id}`}
-                  className={`text-xs truncate hover:text-cyan-400 hover:underline ${focusPlayer && p.player_id === focusPlayer ? "text-cyan-400 font-bold" : "text-slate-300"}`}>
+                  className={`text-xs truncate transition-colors ${focusPlayer && p.player_id === focusPlayer ? "text-cyan-400 font-bold hover:text-cyan-200" : "text-slate-300 hover:text-cyan-400"}`}>
                   {playerName(p.player_id)}
                 </Link>
               </span>
