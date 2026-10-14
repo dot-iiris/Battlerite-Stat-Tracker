@@ -1,12 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api from "@/api";
-import { Trophy, Swords, Flame, Users, TrendingUp } from "lucide-react";
+import { Trophy, Swords, Flame, Users, TrendingUp, ChevronDown, History } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import StreakBadge from "@/components/StreakBadge";
 import { tierFor } from "@/lib/tiers";
 import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
+import FormatFilter, { byFormat, MatchCode } from "@/components/FormatFilter";
+import MatchDetails from "@/components/MatchDetails";
+import MmrChange from "@/components/MmrChange";
 
 const roleClass = (r) => r === "Melee" ? "role-bg-melee" : r === "Ranged" ? "role-bg-ranged" : "role-bg-support";
 
@@ -15,22 +18,41 @@ export default function PlayerProfile() {
   const [stats, setStats] = useState(null);
   const [seasons, setSeasons] = useState([]);
   const [seasonId, setSeasonId] = useState(savedSeason);   // the visitor's last pick, else All
+  const [matches, setMatches] = useState([]);
+  const [players, setPlayers] = useState([]);
+  const [format, setFormat] = useState("all");
+  const [openId, setOpenId] = useState(null);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     (async () => {
       const s = await api.get("/seasons");
       setSeasons(s.data);
     })();
+    api.get("/players").then((r) => setPlayers(r.data));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const loadMatches = useCallback(() => {
+    const params = { player_id: id };
+    if (seasonId) params.season_id = seasonId;
+    return api.get("/matches", { params }).then((r) => setMatches(r.data));
+  }, [id, seasonId]);
 
   useEffect(() => {
     const params = {};
     if (seasonId) params.season_id = seasonId;
     api.get(`/stats/player/${id}`, { params }).then((r) => setStats(r.data));
-  }, [id, seasonId]);
+    setOpenId(null);
+    setShowAll(false);
+    loadMatches();
+  }, [id, seasonId, loadMatches]);
 
   if (!stats) return <div className="text-slate-400 font-mono-hud">Loading dossier...</div>;
+
+  const playerName = (pid) => players.find((p) => p.id === pid)?.name || "—";
+  const listed = matches.filter(byFormat(format));
+  const shown = showAll ? listed : listed.slice(0, 10);
 
   return (
     <div className="space-y-6" data-testid="player-profile-page">
@@ -175,6 +197,76 @@ export default function PlayerProfile() {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="hud-card p-5" data-testid="profile-matches">
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+          <h3 className="font-heading text-lg font-bold uppercase flex items-center gap-2">
+            <History className="w-4 h-4 text-cyan-400" /> Match History
+            <span className="text-xs font-mono-hud text-slate-500 normal-case">{listed.length}</span>
+          </h3>
+          <FormatFilter value={format} onChange={(f) => { setFormat(f); setShowAll(false); }} small testid="profile-matches-format" />
+        </div>
+        {listed.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No matches found.</div> : (
+          <div className="space-y-2">
+            {shown.map((m) => {
+              const me = m.players.find((p) => p.player_id === id);
+              const won = me && me.team === m.winner_team;
+              const open = openId === m.id;
+              const team = (t) => (
+                <span className={`flex flex-col gap-1 min-w-0 ${t === m.winner_team ? "" : "opacity-60"}`}>
+                  {m.players.filter((p) => p.team === t).map((p) => (
+                    <span key={p.player_id} className="flex items-center gap-1.5 min-w-0">
+                      <span className={`inline-flex leading-[0] rounded flex-shrink-0 ${p.player_id === id ? "ring-2 ring-cyan-400 ring-offset-1 ring-offset-[#121828]" : ""}`}>
+                        <ChampionPortrait name={p.champion} role={p.role} size={22} linkToProfile={false} />
+                      </span>
+                      <span className={`text-xs truncate ${p.player_id === id ? "text-cyan-400 font-bold" : "text-slate-300"}`}>{playerName(p.player_id)}</span>
+                    </span>
+                  ))}
+                </span>
+              );
+              const myRounds = me?.team === "B" ? [m.team_b_rounds, m.team_a_rounds] : [m.team_a_rounds, m.team_b_rounds];
+              return (
+                <div key={m.id} className={`bg-[#121828]/60 border rounded transition-colors ${open ? "border-cyan-400/50" : "border-[#1B2438] hover:border-cyan-400/40"}`}>
+                  <button type="button" onClick={() => setOpenId(open ? null : m.id)} data-testid={`profile-match-${m.id}`}
+                    className="w-full grid grid-cols-[auto_1fr] sm:grid-cols-[auto_1fr_auto] items-center gap-3 p-3 text-left">
+                    <div className="flex flex-col items-start gap-1.5">
+                      <span className={`text-[10px] font-mono-hud font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${won ? "text-[#00E676] border-[#00E676]/40 bg-[#00E676]/10" : "text-[#FF2E55] border-[#FF2E55]/40 bg-[#FF2E55]/10"}`}>
+                        {won ? "Win" : "Loss"} {myRounds[0]}:{myRounds[1]}
+                      </span>
+                      <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-0.5 bg-[#0C101B] border border-[#1B2438] rounded">{m.format}</span>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 min-w-0">
+                      {team(me?.team === "B" ? "B" : "A")}
+                      <span className="text-xs text-slate-600">vs</span>
+                      {team(me?.team === "B" ? "A" : "B")}
+                    </div>
+                    <div className="col-span-2 sm:col-span-1 flex sm:flex-col items-center sm:items-end justify-between gap-1 text-xs font-mono-hud text-slate-500 whitespace-nowrap border-t border-[#1B2438] pt-2 sm:border-0 sm:pt-0">
+                      {me && <MmrChange p={me} />}
+                      <MatchCode match={m} />
+                      <span className="flex items-center gap-1">
+                        {new Date(m.played_at).toLocaleDateString()}
+                        <ChevronDown className={`w-4 h-4 transition-transform ${open ? "rotate-180 text-cyan-400" : ""}`} />
+                      </span>
+                    </div>
+                  </button>
+                  {open && (
+                    <div className="px-3 pb-3">
+                      <MatchDetails match={m} playerName={playerName} onChanged={loadMatches}
+                        seasonName={seasons.find((x) => x.id === m.season_id)?.name} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {listed.length > shown.length && (
+              <button type="button" onClick={() => setShowAll(true)}
+                className="w-full py-2 text-xs font-mono-hud uppercase tracking-wider text-cyan-400 hover:text-cyan-300">
+                Show all {listed.length} matches
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
