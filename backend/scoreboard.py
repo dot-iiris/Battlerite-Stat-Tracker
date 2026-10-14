@@ -169,9 +169,17 @@ def _count_orbs(img, timer_x: Optional[float]) -> Dict[str, int]:
         d = max(c[3] for c in cands)
         orbs = [c for c in cands if c[3] >= 0.7 * d]
         line_y = sorted(c[2] for c in orbs)[len(orbs) // 2]
-        for colour, _, cy, _ in orbs:
-            if abs(cy - line_y) <= 0.4 * d:
+        orbs = [c for c in orbs if abs(c[2] - line_y) <= 0.3 * d]
+        # Lit orbs form an evenly spaced chain outwards from the timer. Anything round and
+        # coloured further out (e.g. a red lantern on the map) is not an orb.
+        for colour in counts:
+            dists = sorted(abs(c[1] - centre) for c in orbs if c[0] == colour)
+            prev = 0.0
+            for i, dist in enumerate(dists):
+                if dist - prev > (6 if i == 0 else 3) * d:
+                    break
                 counts[colour] += 1
+                prev = dist
     return counts
 
 
