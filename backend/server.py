@@ -302,6 +302,11 @@ async def startup():
     await db.players.create_index("id", unique=True)
     await db.seasons.create_index("id", unique=True)
     await db.matches.create_index("id", unique=True)
+    # quick lookups instead of reading every match: a player's matches (player pages, MMR, team
+    # balancing, repeat-team check), a season's matches in order, and a match by its code
+    await db.matches.create_index("players.player_id")
+    await db.matches.create_index([("season_id", 1), ("played_at", 1)])
+    await db.matches.create_index("discord_match_id")
     await db.players.create_index("discord_id", unique=True, sparse=True)
     await db.pending_matches.create_index("id", unique=True)
     await db.link_requests.create_index("id", unique=True)
