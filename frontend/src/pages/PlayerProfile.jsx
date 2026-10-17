@@ -125,7 +125,13 @@ export default function PlayerProfile() {
       </div>
 
       <div className="hud-card p-5">
-        <h3 className="font-heading text-lg font-bold uppercase mb-4 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-cyan-400" /> MMR Trajectory</h3>
+        <h3 className="font-heading text-lg font-bold uppercase mb-4 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-cyan-400" /> MMR Trajectory
+          {stats.mmr_history_season_name && (
+            <span className="text-[10px] font-mono-hud font-normal text-slate-500 normal-case tracking-wider" data-testid="mmr-chart-season">
+              · {stats.mmr_history_season_name}
+            </span>
+          )}
+        </h3>
         {stats.mmr_history.length === 0 ? (
           <div className="text-slate-500 text-sm font-mono-hud">No history yet.</div>
         ) : (
