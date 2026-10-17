@@ -1353,6 +1353,47 @@ async def leaderboard(season_id: Optional[str] = None, format: Optional[str] = N
     return result
 
 
+async def trajectory_season(season_id: Optional[str]) -> Optional[dict]:
+    """The one season an MMR trajectory is drawn for: the season picked if it's a ranked one, otherwise
+    the active ranked season, or - between seasons - the ranked season that was played last."""
+    if season_id and season_id not in ("all", "ranked"):
+        s = await db.seasons.find_one({"id": season_id}, {"_id": 0})
+        if is_ranked_season(s):
+            return s
+    s = await get_active_ranked_season()
+    if s:
+        return s
+    ranked = await db.seasons.find({"ranked": {"$ne": False}}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    if not ranked:
+        return None
+    last = await db.matches.find_one({"season_id": {"$in": [x["id"] for x in ranked]}}, {"_id": 0, "season_id": 1},
+                                     sort=[("played_at", -1)])
+    return next((x for x in ranked if last and x["id"] == last["season_id"]), ranked[0])
+
+
+async def mmr_trajectory(pid: str, season: Optional[dict]) -> list:
+    """A player's MMR after each of their matches (and admin adjustments) in one season, oldest first."""
+    if not season:
+        return []
+    ms = await db.matches.find({"season_id": season["id"], "players.player_id": pid},
+                               {"_id": 0, "id": 1, "played_at": 1, "players.player_id": 1, "players.elo_delta": 1,
+                                "players.mmr_track": 1}).sort("played_at", 1).to_list(10000)
+    events = [(m["played_at"], 1, m) for m in ms] + \
+             [(a["at"], 0, a) for a in await season_adjustments(season["id"], pid, counted_only=True)]
+    mmr, out = BASE_MMR, []
+    for at, kind, ev in sorted(events, key=lambda e: (e[0], e[1])):
+        if kind == 0:
+            mmr += ev["delta"]
+            out.append({"match_id": None, "mmr": round(mmr, 2), "played_at": at,
+                        "adjustment": ev["delta"], "reason": ev.get("reason", "")})
+            continue
+        my = next((x for x in ev["players"] if x["player_id"] == pid), None)
+        if my and counts_for_mmr(my):
+            mmr += my.get("elo_delta", 0)
+        out.append({"match_id": ev["id"], "mmr": round(mmr, 2), "played_at": at})
+    return out
+
+
 @api_router.get("/stats/player/{pid}")
 async def player_stats(pid: str, season_id: Optional[str] = None):
     player = await db.players.find_one({"id": pid}, {"_id": 0})
@@ -1473,6 +1514,8 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
     for o in opponent_list:
         o["winrate"] = compute_rate(o)
 
+    traj = await trajectory_season(season_id)
+
     # Compute current streak from most recent matches backwards
     outcomes = []  # newest first
     for m in matches:  # matches sorted DESC by played_at
@@ -1512,7 +1555,9 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
         ],
         "teammates": sorted(teammate_list, key=lambda x: -x["matches"]),
         "opponents": sorted(opponent_list, key=lambda x: -x["matches"]),
-        "mmr_history": mmr_history,
+        # always one ranked season - "All" would run several seasons' MMR together
+        "mmr_history": await mmr_trajectory(pid, traj),
+        "mmr_history_season_name": traj["name"] if traj else None,
         "recent_matches": matches[:10],
     }
 
