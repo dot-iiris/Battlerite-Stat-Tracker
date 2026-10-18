@@ -482,6 +482,15 @@ def parse_scoreboard(image, champion_names: List[str], icon_refs: Optional[Dict[
     }
 
 
+def read_rounds(image) -> Dict[str, int]:
+    """Only the round score ({"blue": your team, "red": enemy team}) - well under a second, so the
+    players can confirm it while the rest of the scoreboard is read."""
+    img = _load_image(image)
+    if img is None:
+        return {}
+    return _count_orbs(img, _timer_x(img))
+
+
 # ------------------------------------------------------------------ map onto a match
 def assign_to_roster(parsed: dict, team_a: List[dict], team_b: List[dict]) -> dict:
     """Work out which side of the screenshot is Team A, and which row is which player.
