@@ -18,6 +18,7 @@ export const PAGE_LOADERS = {
   "/recap": () => import("@/pages/Recap"),
   "/seasons": () => import("@/pages/Seasons"),
   "/settings": () => import("@/pages/Settings"),
+  "/tournament": () => import("@/pages/Tournament"),
 };
 
 export function preloadPageCode(path) {

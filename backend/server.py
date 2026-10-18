@@ -15,7 +15,7 @@ import uuid
 import jwt
 import bcrypt
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Literal
+from typing import Dict, List, Optional, Literal
 from itertools import combinations, permutations
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Form
@@ -2187,6 +2187,194 @@ async def matchmaking(data: MatchmakingRequest):
         chosen["all_splits_repeat"] = best_fresh is None
         return chosen
     return best
+
+
+# --------- Tournament team balancer (admins) ---------
+# Splits any number of players into teams of 2 or 3 whose strengths are as close as possible, using the
+# same strength as matchmaking (MMR, plus each team's best role line-up). Small groups are searched
+# completely; bigger ones start from a snake draft (and random starts) and keep swapping players
+# between teams while that narrows the gap. Pairs can be kept apart or together.
+class TournamentRequest(BaseModel):
+    player_ids: List[str]
+    format: Literal["2v2", "3v3"] = "3v3"
+    mode: Literal["hybrid", "mmr", "synergy"] = "hybrid"
+    season_id: Optional[str] = None
+    apart: List[List[str]] = []      # pairs that must be on different teams
+    together: List[List[str]] = []   # pairs that must be on the same team
+    subs: List[str] = []             # players chosen to sit out (else picked when the numbers don't divide)
+
+
+TOURNAMENT_MAX_PLAYERS = 60
+EXACT_SPLITS_MAX = 60000   # up to this many possible splits, every one is checked
+
+
+def _team_strength(team: List[dict], mode: str) -> tuple:
+    """(strength in MMR, average MMR, {player id: role}) - as in matchmaking."""
+    avg = sum(p["mmr"] for p in team) / len(team)
+    if BALANCE_ROLE_MODEL == "spread" or mode == "mmr":
+        return avg, avg, {}
+    line, roles = best_lineup(team)
+    if mode == "synergy":
+        return line, avg, roles
+    return HYBRID_MMR_WEIGHT * avg + (1 - HYBRID_MMR_WEIGHT) * line, avg, roles
+
+
+def _balance_tournament(players: Dict[str, dict], size: int, n_subs: int, fixed_subs: List[str], mode: str,
+                        apart: List[tuple], together: List[tuple], restarts: int = 40) -> list:
+    """Best few splits found: [(score, [[ids] per team], [sub ids])]. Lower score = more even."""
+    import random
+    ids = [i for i in players if i not in fixed_subs]
+    k = (len(ids) - n_subs) // size
+    rng = random.Random(7)   # same players, same answer
+    cache = {}
+
+    def strength(team):
+        key = frozenset(team)
+        if key not in cache:
+            cache[key] = _team_strength([players[i] for i in team], mode)[0]
+        return cache[key]
+
+    def score(buckets):
+        teams, bench = buckets[:k], buckets[k] if n_subs else []
+        where = {i: t for t, team in enumerate(teams) for i in team}
+        for i in bench:
+            where[i] = -1
+        broken = sum(where[a] == where[b] and where[a] != -1 for a, b in apart) + \
+                 sum(where[a] != where[b] for a, b in together)
+        st = [strength(t) for t in teams]
+        mean = sum(st) / k
+        return (broken, round(max(st) - min(st), 3), round(sum((x - mean) ** 2 for x in st), 3))
+
+    def snake(order):
+        buckets = [[] for _ in range(k)] + ([[]] if n_subs else [])
+        for n, i in enumerate(order):
+            if n >= k * size:
+                buckets[k].append(i)   # weakest left over sit out to begin with; swaps can change that
+                continue
+            rnd, pos = divmod(n, k)
+            buckets[pos if rnd % 2 == 0 else k - 1 - pos].append(i)
+        return buckets
+
+    def improve(buckets):
+        cur = score(buckets)
+        better = True
+        while better:
+            better = False
+            for a in range(len(buckets)):
+                for b in range(a + 1, len(buckets)):
+                    for x in range(len(buckets[a])):
+                        for y in range(len(buckets[b])):
+                            buckets[a][x], buckets[b][y] = buckets[b][y], buckets[a][x]
+                            new = score(buckets)
+                            if new < cur:
+                                cur, better = new, True
+                            else:
+                                buckets[a][x], buckets[b][y] = buckets[b][y], buckets[a][x]
+        return cur, buckets
+
+    found = {}
+    # small enough: try every split (the search below can stop at a good-but-not-best one)
+    from math import comb, factorial
+    total = factorial(len(ids) - n_subs) // (factorial(size) ** k * factorial(k)) * comb(len(ids), n_subs)
+    if total <= EXACT_SPLITS_MAX:
+        def parts(rest):
+            if not rest:
+                yield []
+                return
+            first = rest[0]
+            for mates in combinations(rest[1:], size - 1):
+                team = [first, *mates]
+                left = [i for i in rest if i not in team]
+                for more in parts(left):
+                    yield [team] + more
+        for bench in combinations(ids, n_subs):
+            rest = [i for i in ids if i not in bench]
+            for teams in parts(rest):
+                buckets = teams + ([list(bench)] if n_subs else [])
+                key = (frozenset(frozenset(t) for t in teams), frozenset(bench))
+                found[key] = (score(buckets), [list(t) for t in teams], list(bench))
+        return sorted(found.values(), key=lambda f: f[0])[:3]
+    by_mmr = sorted(ids, key=lambda i: -players[i]["mmr"])
+    starts = [by_mmr] + [rng.sample(ids, len(ids)) for _ in range(restarts)]
+    for order in starts:
+        sc, buckets = improve(snake(order))
+        key = (frozenset(frozenset(t) for t in buckets[:k]), frozenset(buckets[k]) if n_subs else frozenset())
+        found[key] = (sc, [list(t) for t in buckets[:k]], list(buckets[k]) if n_subs else [])
+    best = sorted(found.values(), key=lambda f: f[0])
+    if len(best) < 3:   # every start ended the same: offer the best one-swap changes as alternatives
+        top = best[0][1] + ([best[0][2]] if n_subs else [])
+        for a in range(len(top)):
+            for b in range(a + 1, len(top)):
+                for x in range(len(top[a])):
+                    for y in range(len(top[b])):
+                        alt = [list(t) for t in top]
+                        alt[a][x], alt[b][y] = alt[b][y], alt[a][x]
+                        key = (frozenset(frozenset(t) for t in alt[:k]), frozenset(alt[k]) if n_subs else frozenset())
+                        if key not in found:
+                            found[key] = (score(alt), alt[:k], alt[k] if n_subs else [])
+        best = sorted(found.values(), key=lambda f: f[0])
+    return [x for x in best if x[0][0] <= best[0][0][0]][:3]   # no alternative that breaks more rules
+
+
+@api_router.post("/tournament/balance")
+async def tournament_balance(data: TournamentRequest, user: dict = Depends(admin_required)):
+    size = {"2v2": 2, "3v3": 3}[data.format]
+    ids = list(dict.fromkeys(data.player_ids))
+    if len(ids) > TOURNAMENT_MAX_PLAYERS:
+        raise HTTPException(400, f"At most {TOURNAMENT_MAX_PLAYERS} players")
+    subs = [i for i in dict.fromkeys(data.subs) if i in ids]
+    playing = len(ids) - len(subs)
+    if playing < size * 2:
+        raise HTTPException(400, f"Need at least {size * 2} players (not counting subs) for {data.format}")
+    n_subs = playing % size   # still to pick
+    pairs = lambda xs: [(a, b) for a, b in (tuple(x[:2]) for x in xs if len(x) >= 2) if a != b and a in ids and b in ids]
+    apart, together = pairs(data.apart), pairs(data.together)
+    # together groups must fit in a team, and can't contain a pair that's kept apart
+    groups = {i: {i} for i in ids}
+    for a, b in together:
+        merged = groups[a] | groups[b]
+        for i in merged:
+            groups[i] = merged
+    for g in {frozenset(g) for g in groups.values()}:
+        if len(g) > size:
+            raise HTTPException(400, f"{len(g)} players are linked together, but a team only has {size}")
+        if any(a in g and b in g for a, b in apart):
+            raise HTTPException(400, "Two players are both kept together and kept apart")
+        if g & set(subs) and not g <= set(subs):
+            raise HTTPException(400, "A sub is linked to a player who's playing")
+
+    season_id = data.season_id or ((await get_active_ranked_season()) or {}).get("id")
+    players = {}
+    for pid in ids:
+        p = await db.players.find_one({"id": pid}, {"_id": 0, "id": 1, "name": 1})
+        if not p:
+            raise HTTPException(404, f"Player {pid} not found")
+        p["mmr"] = await get_player_mmr(pid, season_id) if season_id else BASE_MMR
+        if BALANCE_ROLE_MODEL != "spread" and data.mode != "mmr":
+            p["role_offsets"] = await role_offsets(pid)   # hidden: not sent back
+        players[pid] = p
+
+    results = await asyncio.get_running_loop().run_in_executor(
+        None, _balance_tournament, players, size, n_subs, subs, data.mode, apart, together)
+
+    def show(split):
+        sc, teams, picked_subs = split
+        out = []
+        for t in teams:
+            team = [players[i] for i in t]
+            strength, avg, roles = _team_strength(team, data.mode)
+            out.append({"strength": round(strength, 1), "avg_mmr": round(avg, 1),
+                        "players": [{"id": p["id"], "name": p["name"], "mmr": round(p["mmr"]),
+                                     "role": roles.get(p["id"])} for p in sorted(team, key=lambda p: -p["mmr"])]})
+        out.sort(key=lambda t: -t["strength"])   # seed 1 first
+        for n, t in enumerate(out, 1):
+            t["seed"] = n
+        sub_list = [{"id": i, "name": players[i]["name"], "mmr": round(players[i]["mmr"]), "chosen": i in subs}
+                    for i in subs + picked_subs]
+        return {"teams": out, "subs": sub_list, "spread": sc[1], "rules_broken": sc[0]}
+
+    return {"options": [show(r) for r in results], "format": data.format, "mode": data.mode,
+            "role_model": "spread" if BALANCE_ROLE_MODEL == "spread" else "role_mmr"}
 
 
 # =====================================================================
