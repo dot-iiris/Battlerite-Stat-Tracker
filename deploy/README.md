@@ -19,4 +19,8 @@
 - Logs: `journalctl -u brstats-api -f`, `journalctl -u brstats-bot -f`
 - Restart: `sudo systemctl restart brstats-api brstats-bot`
 - Settings: `/opt/brstats/backend.env` (website), `/opt/brstats/bot/.env` (bot); restart after editing
+- Website down with every request failing (502) after a restart: check `journalctl -u mongod -b`.
+  MongoDB 8 won't start on Linux kernels 6.19 to 7.0.13, and Ubuntu updates can install one.
+  `sudo mongo-kernel-pin` makes the server boot a kernel MongoDB accepts (and keeps it installed);
+  reboot if it says so. The setup script already does this for new servers.
 - Database copy: `/opt/brstats/venv/bin/python /opt/brstats/site/deploy/db_transfer.py export backup.jsonl.gz --env /opt/brstats/backend.env`

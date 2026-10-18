@@ -39,7 +39,13 @@ if ! command -v mongod >/dev/null; then
   apt-get update
   apt-get install -y mongodb-org
 fi
-systemctl enable --now mongod   # listens on 127.0.0.1 only (default mongod.conf)
+log "Checking the Linux kernel works with MongoDB"
+install -m 755 "$SITE/deploy/mongo-kernel-pin" /usr/local/sbin/mongo-kernel-pin
+reboot_needed=0
+pin_rc=0; mongo-kernel-pin || pin_rc=$?
+[ "$pin_rc" -eq 10 ] && reboot_needed=1
+systemctl enable mongod   # listens on 127.0.0.1 only (default mongod.conf)
+[ "$reboot_needed" -eq 1 ] || systemctl start mongod
 
 log "Creating the brstats user"
 id -u brstats >/dev/null 2>&1 || useradd --system --home-dir "$APP" --shell /usr/sbin/nologin brstats
@@ -129,4 +135,8 @@ log "Building BR Stats"
 brstats-update --no-pull
 
 touch "$APP/.setup-done"
+if [ "$reboot_needed" -eq 1 ]; then
+  log "Restarting in 1 minute to switch to a kernel MongoDB accepts"
+  shutdown -r +1
+fi
 log "Setup done. Next: run deploy-website.bat (website + its settings), then deploy-bot.bat (the bot) on your PC."

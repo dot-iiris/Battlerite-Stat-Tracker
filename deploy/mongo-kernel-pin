@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# MongoDB 8 refuses to start on Linux kernels 6.19 to 7.0.13 (https://jira.mongodb.org/browse/SERVER-121912).
+# If the server would boot one of those, this makes it boot the newest installed kernel MongoDB accepts
+# (installing Ubuntu's standard 6.8 kernel if there's none) and keeps that kernel installed.
+# Safe to run any time; nothing in the database is touched. Run as root.
+# Exit code: 0 = nothing needed / already pinned and running it, 10 = pinned - reboot to use it.
+# Undo: restore /etc/default/grub.before-kernel-pin, run update-grub, apt-mark unhold the kernel.
+set -uo pipefail
+log() { echo "==> $*"; }
+ok_ver() {  # MongoDB-compatible kernel: below 6.19, or 7.0.14 and later
+  local v=${1%%-*} a b c; IFS=. read -r a b c <<<"$v"; c=${c:-0}
+  (( a < 6 || (a == 6 && b < 19) || a > 7 || (a == 7 && (b > 0 || c >= 14)) ))
+}
+installed() { ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's#/boot/vmlinuz-##' | sort -V; }
+newest_ok() { local p=""; for k in $(installed); do ok_ver "$k" && p=$k; done; echo "$p"; }
+
+cur=$(uname -r)
+newest=$(installed | tail -1)
+pinned=$(grep -h '^GRUB_DEFAULT=' /etc/default/grub /etc/default/grub.d/*.cfg 2>/dev/null | tail -1)
+if ok_ver "$cur" && ok_ver "$newest"; then
+  log "Kernel $cur is fine for MongoDB"; exit 0
+fi
+if ok_ver "$cur" && [[ "$pinned" == *"gnulinux-$cur-advanced"* ]]; then
+  log "Kernel pinned to $cur for MongoDB (newer $newest installed but not used)"; exit 0
+fi
+
+pick=$(newest_ok)
+if [ -z "$pick" ]; then
+  log "No MongoDB-compatible kernel installed - installing Ubuntu's standard kernel"
+  apt-get install -y linux-image-generic >/dev/null && update-grub >/dev/null 2>&1
+  pick=$(newest_ok)
+fi
+[ -n "$pick" ] || { log "WARNING: couldn't get a kernel MongoDB accepts - MongoDB won't start"; exit 1; }
+
+sub=$(grep -oP "submenu '[^']*' .*?\\\$menuentry_id_option '\K[^']+" /boot/grub/grub.cfg | head -1)
+ent=$(grep -oP "menuentry_id_option '\Kgnulinux-${pick//./\\.}-advanced-[^']+" /boot/grub/grub.cfg | head -1)
+[ -n "$sub" ] && [ -n "$ent" ] || { log "WARNING: no boot menu entry for $pick - nothing changed"; exit 1; }
+[ -e /etc/default/grub.before-kernel-pin ] || cp /etc/default/grub /etc/default/grub.before-kernel-pin
+line="GRUB_DEFAULT=\"$sub>$ent\""
+if grep -q '^GRUB_DEFAULT=' /etc/default/grub; then sed -i "s|^GRUB_DEFAULT=.*|$line|" /etc/default/grub; else echo "$line" >> /etc/default/grub; fi
+for f in /etc/default/grub.d/*.cfg; do [ -f "$f" ] && sed -i "s|^GRUB_DEFAULT=.*|$line|" "$f"; done
+update-grub >/dev/null 2>&1
+apt-mark hold "linux-image-$pick" "linux-modules-$pick" >/dev/null 2>&1 || true
+if [ "$cur" = "$pick" ]; then log "Kernel pinned to $cur for MongoDB"; exit 0; fi
+log "Kernel $pick pinned for MongoDB (running $cur) - reboot to use it"
+exit 10
