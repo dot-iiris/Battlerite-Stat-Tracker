@@ -1937,6 +1937,10 @@ HYBRID_MMR_WEIGHT = _num_env("HYBRID_MMR_WEIGHT", 0.8, 0.0, 1.0)     # Hybrid: g
 SUPPORT_WEIGHT_2V2 = _num_env("SUPPORT_WEIGHT_2V2", 0.6, 0.0, 1.0)   # 2v2: the support's share of a line-up
 ROLE_PRIOR_GAMES = 15    # a role offset counts games/(games+15) - few games stay close to general MMR
 ROLE_OFFSET_CAP = 150
+# A role the player has rarely or never played starts this much below their MMR, fading out as they play
+# it (none once it's ROLE_MAIN_SHARE of their games) and as their games in it show how they really do.
+UNPROVEN_ROLE_PENALTY = _num_env("UNPROVEN_ROLE_PENALTY", 50, 0, 150)
+ROLE_MAIN_SHARE = 0.3
 ROLE_POINT_MMR = 1600 / math.log(10) / K_FACTOR   # 1 MMR point/game better than usual ~ this much MMR
 ROLES = ("Melee", "Ranged", "Support")
 
@@ -1955,16 +1959,15 @@ async def role_offsets(pid: str) -> dict:
                     by_role[r].append(mp["elo_delta"])
     every = [d for ds in by_role.values() for d in ds]
     if not every:
-        return {r: 0.0 for r in ROLES}
+        return {r: 0.0 for r in ROLES}   # no ranked games yet: nothing known about any role
     usual = sum(every) / len(every)
     out = {}
     for r, ds in by_role.items():
-        if not ds:
-            out[r] = 0.0
-            continue
-        raw = (sum(ds) / len(ds) - usual) * ROLE_POINT_MMR
+        # unproven roles: assumed worse, less so the more of their games are in it
+        prior = -UNPROVEN_ROLE_PENALTY * (1 - min(1.0, len(ds) / len(every) / ROLE_MAIN_SHARE))
+        raw = (sum(ds) / len(ds) - usual) * ROLE_POINT_MMR if ds else 0.0
         trust = len(ds) / (len(ds) + ROLE_PRIOR_GAMES)
-        out[r] = max(-ROLE_OFFSET_CAP, min(ROLE_OFFSET_CAP, raw * trust))
+        out[r] = max(-ROLE_OFFSET_CAP, min(ROLE_OFFSET_CAP, raw * trust + prior * (1 - trust)))
     return out
 
 
@@ -3502,6 +3505,8 @@ SETTING_SPECS = [
      "label": "Role model", "help": "How roles count when balancing: each player's hidden role MMR, or how varied the teams' usual roles are."},
     {"key": "HYBRID_MMR_WEIGHT", "app": "website", "group": "Team balancing", "type": "float", "min": 0, "max": 1,
      "label": "Hybrid: MMR share", "help": "In Hybrid Balance, how much general MMR counts (0-1); the rest is the role part."},
+    {"key": "UNPROVEN_ROLE_PENALTY", "app": "website", "group": "Team balancing", "type": "int", "min": 0, "max": 150,
+     "label": "Unproven role penalty (MMR)", "help": "A role a player has rarely or never played counts this much below their MMR until their games in it show otherwise. 0 = off."},
     {"key": "SUPPORT_WEIGHT_2V2", "app": "website", "group": "Team balancing", "type": "float", "min": 0, "max": 1,
      "label": "2v2: support share", "help": "How much the Support counts in a 2v2 team's role line-up (0-1)."},
     {"key": "LOBBY_TIMEOUT_MINUTES", "app": "bot", "group": "Lobbies", "type": "float", "min": 0, "max": 1440,
@@ -3546,6 +3551,7 @@ WEBSITE_DEFAULTS = {   # what the .env files gave at startup
     "BALANCE_ROLE_MODEL": BALANCE_ROLE_MODEL if BALANCE_ROLE_MODEL == "spread" else "role_mmr",
     "HYBRID_MMR_WEIGHT": HYBRID_MMR_WEIGHT,
     "SUPPORT_WEIGHT_2V2": SUPPORT_WEIGHT_2V2,
+    "UNPROVEN_ROLE_PENALTY": int(UNPROVEN_ROLE_PENALTY),
 }
 _SNOWFLAKE = re.compile(r"\d{15,21}")
 
@@ -3627,7 +3633,7 @@ def parse_setting(spec: dict, raw):
 
 def _apply_website_setting(key: str, value):
     """Use a website setting right away (value None = back to the .env default)."""
-    global BALANCE_ROLE_MODEL, HYBRID_MMR_WEIGHT, SUPPORT_WEIGHT_2V2, LEADERBOARD_SIZE
+    global BALANCE_ROLE_MODEL, HYBRID_MMR_WEIGHT, SUPPORT_WEIGHT_2V2, LEADERBOARD_SIZE, UNPROVEN_ROLE_PENALTY
     v = WEBSITE_DEFAULTS[key] if value is None else value
     if key == "OCR_THREADS":
         os.environ["OCR_THREADS"] = str(int(v))
@@ -3643,6 +3649,8 @@ def _apply_website_setting(key: str, value):
         HYBRID_MMR_WEIGHT = float(v)
     elif key == "SUPPORT_WEIGHT_2V2":
         SUPPORT_WEIGHT_2V2 = float(v)
+    elif key == "UNPROVEN_ROLE_PENALTY":
+        UNPROVEN_ROLE_PENALTY = float(v)
 
 
 async def load_setting_overrides():
