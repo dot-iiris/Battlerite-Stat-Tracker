@@ -68,6 +68,13 @@ Screenshot reading is performed on the server with RapidOCR and OpenCV and
 does not depend on any external service. It reads the Average Total tab of the
 in-game scoreboard.
 
+Admins can change some settings on the Settings page without redeploying:
+the screenshot reading cores, the Discord leaderboard size and the team
+balancing weights, and on the bot-integration branch also the bot's settings
+and its 2v2 and 3v3 map pools. A setting changed there replaces the value in
+.env until it is reset. Secrets such as tokens, passwords, webhooks and the
+database address can only be set in .env.
+
 ## Hosting
 
 The deploy/ directory contains scripts for running the site on an Oracle Cloud

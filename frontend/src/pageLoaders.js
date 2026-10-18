@@ -17,6 +17,7 @@ export const PAGE_LOADERS = {
   "/matchmaking": () => import("@/pages/Matchmaking"),
   "/recap": () => import("@/pages/Recap"),
   "/seasons": () => import("@/pages/Seasons"),
+  "/settings": () => import("@/pages/Settings"),
 };
 
 export function preloadPageCode(path) {
