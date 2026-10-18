@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "@/api";
 import { toast } from "sonner";
-import { Trophy, Users, X, Zap, Copy, Ban, Link2, Armchair, Gauge } from "lucide-react";
+import { Trophy, Users, X, Zap, Copy, Ban, Link2, Armchair, Gauge, Award } from "lucide-react";
 import SeasonSelect, { newestSeason } from "@/components/SeasonSelect";
 
 // Admins: split a group of players into the most even teams for a tournament. The pool, subs and
@@ -107,6 +108,14 @@ export default function Tournament() {
   };
 
   const shown = result?.options?.[option];
+  const nav = useNavigate();
+  useEffect(() => {   // the Tournaments page can bring these teams in
+    if (!shown) return;
+    try {
+      window.localStorage.setItem("brstats.lastTeams", JSON.stringify({ format: result.format,
+        teams: shown.teams.map((t) => ({ name: `Team ${t.seed}`, player_ids: t.players.map((p) => p.id) })) }));
+    } catch { /* private window etc. */ }
+  }, [shown, result]);
 
   const copy = async () => {
     if (!shown) return;
@@ -274,6 +283,9 @@ export default function Tournament() {
             <div className="flex-1" />
             <button onClick={copy} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase border border-[#1B2438] hover:border-cyan-400 rounded"
               data-testid="tour-copy"><Copy className="w-3.5 h-3.5" /> Copy for Discord</button>
+            <button onClick={() => nav("/tournaments?new=1&import=1")} data-testid="tour-to-tournament"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase border border-cyan-400/50 text-cyan-400 hover:bg-cyan-400/10 rounded">
+              <Award className="w-3.5 h-3.5" /> Start a tournament</button>
           </div>
           <div className="text-xs text-slate-400">
             Strongest and weakest team are <span className="text-cyan-400 font-mono-hud">{Math.round(shown.spread)}</span> apart in team strength. Teams are listed strongest first, for seeding.

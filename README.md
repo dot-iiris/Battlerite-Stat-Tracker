@@ -75,6 +75,16 @@ and its 2v2 and 3v3 map pools. A setting changed there replaces the value in
 .env until it is reset. Secrets such as tokens, passwords, webhooks and the
 database address can only be set in .env.
 
+Tournaments are run from the Tournaments page. A tournament can have a league
+stage (round robin, Swiss or groups), playoffs (single or double elimination,
+with an optional grand final reset), or both, and the series length is set for
+each round. Games are entered on the website or with /submit in Discord, and
+the standings and bracket are worked out from them. Tournament games are kept
+apart from logged matches: they don't change MMR or count in the ranked or
+unranked stats, and each tournament has stats of its own. Stream overlay pages
+for OBS are opened with a private link. For now tournaments are an admin-only
+preview.
+
 ## Hosting
 
 The deploy/ directory contains scripts for running the site on an Oracle Cloud

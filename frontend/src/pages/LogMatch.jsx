@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import api, { API } from "@/api";
 import { toast } from "sonner";
-import { PlusCircle, Swords, Trash2, ImagePlus, AlertTriangle, X } from "lucide-react";
+import { PlusCircle, Swords, Trash2, ImagePlus, AlertTriangle, X, Award } from "lucide-react";
 import { invalidateChampionStats } from "@/lib/championStats";
 
 const STAT_FIELDS = ["score", "damage", "protection", "disables"];
@@ -26,6 +27,10 @@ export default function LogMatch() {
   const [shot, setShot] = useState(null);       // what /screenshots/read returned
   const [reading, setReading] = useState(false);
   const fileRef = useRef(null);
+  const [params] = useSearchParams();
+  const nav = useNavigate();
+  const tmId = params.get("tm");   // a game of a tournament match
+  const [tm, setTm] = useState(null);   // {t, m}
 
   const dropShot = () => {
     if (shot) api.delete(`/screenshots/${shot.screenshot_id}`).catch(() => {});
@@ -96,6 +101,21 @@ export default function LogMatch() {
       setSeasonId(active?.id || "");
       setPlayers(p.data);
       setChampions(c.data);
+      if (tmId) {
+        const [tid, mid] = tmId.split(":");
+        try {
+          const t = (await api.get(`/tournaments/${tid}`)).data;
+          const m = t.matches.find((x) => x.id === mid);
+          if (!m || !m.team1 || !m.team2) throw new Error("gone");
+          const side = (team) => t.teams.find((x) => x.id === team).players.map((pl) => ({ ...emptySlot(), name: pl.name, player_id: pl.id }));
+          setFormat(t.format);
+          setTeamA(side(m.team1));
+          setTeamB(side(m.team2));
+          setTm({ t, m });
+        } catch {
+          toast.error("That tournament match can't be found");
+        }
+      }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -162,6 +182,7 @@ export default function LogMatch() {
     try {
       const payload = {
         season_id: seasonId,
+        tournament_match_id: tm ? tmId : null,
         format,
         team_a_rounds: Number(teamARounds),
         team_b_rounds: Number(teamBRounds),
@@ -180,8 +201,9 @@ export default function LogMatch() {
       };
       await api.post("/matches", payload);
       invalidateChampionStats();
-      toast.success(shot ? "Match logged with its screenshot" : "Match logged");
+      toast.success(tm ? "Game logged to the tournament" : shot ? "Match logged with its screenshot" : "Match logged");
       setShot(null);   // attached now
+      if (tm) { nav(`/tournaments/${tm.t.id}?tab=matches&m=${tm.m.id}`); return; }
       // Reset
       applyFormat(format);
       setTeamARounds(3); setTeamBRounds(2); setNotes("");
@@ -253,9 +275,19 @@ export default function LogMatch() {
         <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Log Match</h1>
       </div>
 
+      {tm && (
+        <div className="hud-card p-4 flex flex-wrap items-center gap-3 border-cyan-400/40" data-testid="log-tournament">
+          <Award className="w-5 h-5 text-cyan-400" />
+          <div className="text-sm">
+            <div className="font-semibold">{tm.t.name} · {tm.m.label || `Round ${tm.m.round}`} · game {tm.m.wins1 + tm.m.wins2 + 1}{tm.m.best_of > 1 ? ` (best of ${tm.m.best_of}, ${tm.m.wins1}-${tm.m.wins2} so far)` : ""}</div>
+            <div className="text-xs text-slate-400">Team A is {tm.m.team1_name}, Team B is {tm.m.team2_name} (swap them if the screenshot has them the other way round). It's kept with the tournament only - no MMR change, and it isn't in the ranked or unranked stats.</div>
+          </div>
+          <Link to={`/tournaments/${tm.t.id}?tab=matches`} className="ml-auto text-xs font-mono-hud uppercase text-slate-400 hover:text-cyan-400">Back to the tournament</Link>
+        </div>
+      )}
       <form onSubmit={submit} className="space-y-6">
         <div className="hud-card p-5 grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
+          <div className={tm ? "hidden" : ""}>
             <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Season</label>
             <select value={seasonId} onChange={(e) => setSeasonId(e.target.value)} className="w-full bg-[#121828] border border-[#1B2438] focus:border-cyan-400 focus:outline-none rounded px-3 py-2.5 text-sm" data-testid="log-season">
               {seasons.map((s) => <option key={s.id} value={s.id}>{s.name}{s.active ? " (active)" : ""}</option>)}
@@ -265,7 +297,7 @@ export default function LogMatch() {
             <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Format</label>
             <div className="flex gap-2">
               {["2v2", "3v3"].map((fmt) => (
-                <button type="button" key={fmt} onClick={() => applyFormat(fmt)}
+                <button type="button" key={fmt} onClick={() => applyFormat(fmt)} disabled={!!tm}
                   className={`flex-1 px-3 py-2 font-mono-hud text-sm uppercase tracking-wider rounded border transition-colors ${format === fmt ? "bg-cyan-400 text-black border-cyan-400 font-bold" : "bg-[#121828] border-[#1B2438] text-slate-300 hover:border-cyan-400/40"}`}
                   data-testid={`format-${fmt}`}
                 >{fmt}</button>
