@@ -319,6 +319,8 @@ async def startup():
     await db.champion_icons.create_index("champion")
     await db.ocr_feedback.create_index("created_at")
     await db.screenshots.create_index("sha256")
+    await db.settings.create_index("key", unique=True)
+    await load_setting_overrides()
     _spawn(prune_screenshots())
     _spawn(_backfill_mmr_before())
     try:
@@ -3473,6 +3475,244 @@ async def match_stats(mid: str):
 
 
 # --------- Include Router ---------
+# --------- Settings admins can change (Settings page, and the bot's /admin settings) ---------
+# A value saved here replaces the .env value until it's reset; the .env value is the default.
+# Secrets (tokens, keys, passwords, webhooks, the database address) are deliberately not here -
+# they only ever live in the .env files.
+BOT_SETTINGS = False   # bot-integration: the Discord bot's settings are kept here too
+MAP_NAMES = [
+    "Mount Araz (Day)", "Mount Araz (Night)", "Blackstone Arena (Day)", "Blackstone Arena (Night)",
+    "Dragon Garden (Day)", "Dragon Garden (Night)", "Daharin Battlegrounds (Day)",
+    "Daharin Battlegrounds (Night)", "The Great Market (Night)", "Meriko Summit (Night)",
+    "Orman Temple (Night)",
+]
+SETTING_GROUPS = ["Website", "Team balancing", "Lobbies", "Lobby pings", "Results", "Roles", "Map pools"]
+SETTING_SPECS = [
+    # app "website": used by the website itself; "bot": used by the Discord bot
+    {"key": "OCR_THREADS", "app": "website", "group": "Website", "type": "int", "min": 1, "max": 4,
+     "label": "Screenshot reading cores", "help": "CPU cores one screenshot read may use. More than the server has doesn't help."},
+    {"key": "DISCORD_LEADERBOARD_SIZE", "app": "website", "group": "Website", "type": "int", "min": 1, "max": 50,
+     "label": "Discord leaderboard size", "help": "Players shown in the live leaderboard post in Discord."},
+    {"key": "BALANCE_ROLE_MODEL", "app": "website", "group": "Team balancing", "type": "choice",
+     "choices": [["role_mmr", "Hidden role MMR"], ["spread", "Role spread (old)"]],
+     "label": "Role model", "help": "How roles count when balancing: each player's hidden role MMR, or how varied the teams' usual roles are."},
+    {"key": "HYBRID_MMR_WEIGHT", "app": "website", "group": "Team balancing", "type": "float", "min": 0, "max": 1,
+     "label": "Hybrid: MMR share", "help": "In Hybrid Balance, how much general MMR counts (0-1); the rest is the role part."},
+    {"key": "SUPPORT_WEIGHT_2V2", "app": "website", "group": "Team balancing", "type": "float", "min": 0, "max": 1,
+     "label": "2v2: support share", "help": "How much the Support counts in a 2v2 team's role line-up (0-1)."},
+    {"key": "LOBBY_TIMEOUT_MINUTES", "app": "bot", "group": "Lobbies", "type": "float", "min": 0, "max": 1440,
+     "label": "Lobby timeout (minutes)", "help": "A lobby nobody joins or leaves for this long closes. 0 = never."},
+    {"key": "STICKY_SETTINGS_MINUTES", "app": "bot", "group": "Lobbies", "type": "float", "min": 0, "max": 1440,
+     "label": "Reuse last settings (minutes)", "help": "/join opens a lobby like the channel's last match if it started within this long."},
+    {"key": "LOBBY_CHANNEL_IDS", "app": "bot", "group": "Lobbies", "type": "channels",
+     "label": "Lobby channels", "help": "Channels lobbies may be opened in. None = any channel."},
+    {"key": "LOBBY_PING_ROLE_ID", "app": "bot", "group": "Lobby pings", "type": "role",
+     "label": "Ping role", "help": "Role mentioned to gather players. Off = no pings."},
+    {"key": "LOBBY_PING_QUIET_MINUTES", "app": "bot", "group": "Lobby pings", "type": "float", "min": 0, "max": 1440,
+     "label": "New lobby: quiet for (minutes)", "help": "A new lobby pings the role when no lobby of its format has filled for this long."},
+    {"key": "LOBBY_PING_COOLDOWN_MINUTES", "app": "bot", "group": "Lobby pings", "type": "float", "min": 0, "max": 1440,
+     "label": "Ping cooldown (minutes)", "help": "At most one new-lobby ping per this long, and one 'one player short' ping per lobby."},
+    {"key": "RESULT_CONFIRMATIONS", "app": "bot", "group": "Results", "type": "int", "min": 1, "max": 6,
+     "label": "3v3: confirmations", "help": "Players who must confirm a 3v3 result before it's logged."},
+    {"key": "RESULT_LOSER_CONFIRMATIONS", "app": "bot", "group": "Results", "type": "int", "min": 0, "max": 3,
+     "label": "3v3: from the losing team", "help": "How many of those confirmations must come from the losing team."},
+    {"key": "RESULT_CONFIRMATIONS_2V2", "app": "bot", "group": "Results", "type": "int", "min": 1, "max": 4,
+     "label": "2v2: confirmations", "help": "Players who must confirm a 2v2 result before it's logged."},
+    {"key": "RESULT_LOSER_CONFIRMATIONS_2V2", "app": "bot", "group": "Results", "type": "int", "min": 0, "max": 2,
+     "label": "2v2: from the losing team", "help": "How many of those confirmations must come from the losing team."},
+    {"key": "OCR_TRUST_STREAK", "app": "bot", "group": "Results", "type": "int", "min": 0, "max": 100,
+     "label": "Trust screenshots after", "help": "After this many screenshots in a row needed no corrections, players only confirm. 0 = always allow fixes."},
+    {"key": "CLEAN_MATCH_POST", "app": "bot", "group": "Results", "type": "bool",
+     "label": "Tidy match posts", "help": "Delete lobby, ping and 'Match found' posts once a match is submitted or cancelled."},
+    {"key": "LINKED_ROLE_ID", "app": "bot", "group": "Roles", "type": "role",
+     "label": "Linked player role", "help": "Role given to members linked to a website player. Off = none."},
+    {"key": "ADMIN_ROLE_IDS", "app": "bot", "group": "Roles", "type": "roles",
+     "label": "Bot admin roles", "help": "Roles that can use the bot's admin commands (anyone with Manage Server always can)."},
+    {"key": "MAP_POOL_2V2", "app": "bot", "group": "Map pools", "type": "maps",
+     "label": "2v2 maps", "help": "Maps a 2v2 match can be played on."},
+    {"key": "MAP_POOL_3V3", "app": "bot", "group": "Map pools", "type": "maps",
+     "label": "3v3 maps", "help": "Maps a 3v3 match can be played on."},
+]
+SETTING_SPECS = [x for x in SETTING_SPECS if x["app"] == "website" or BOT_SETTINGS]
+SETTING_GROUPS = [g for g in SETTING_GROUPS if any(x["group"] == g for x in SETTING_SPECS)]
+SETTING_BY_KEY = {x["key"]: x for x in SETTING_SPECS}
+WEBSITE_DEFAULTS = {   # what the .env files gave at startup
+    "OCR_THREADS": int(os.environ.get("OCR_THREADS") or 1),
+    "DISCORD_LEADERBOARD_SIZE": LEADERBOARD_SIZE,
+    "BALANCE_ROLE_MODEL": BALANCE_ROLE_MODEL if BALANCE_ROLE_MODEL == "spread" else "role_mmr",
+    "HYBRID_MMR_WEIGHT": HYBRID_MMR_WEIGHT,
+    "SUPPORT_WEIGHT_2V2": SUPPORT_WEIGHT_2V2,
+}
+_SNOWFLAKE = re.compile(r"\d{15,21}")
+
+
+def parse_setting(spec: dict, raw):
+    """A typed, checked value from what an admin entered (raises ValueError with a readable reason)."""
+    t = spec["type"]
+    text = raw if isinstance(raw, str) else ("" if raw is None else str(raw))
+    if t in ("int", "float"):
+        if isinstance(raw, bool):
+            raise ValueError("Enter a number")
+        try:
+            v = float(text.strip())
+        except ValueError:
+            raise ValueError("Enter a number")
+        if t == "int":
+            if v != int(v):
+                raise ValueError("Enter a whole number")
+            v = int(v)
+        if v < spec["min"] or v > spec["max"]:
+            raise ValueError(f"Must be between {spec['min']:g} and {spec['max']:g}")
+        return v
+    if t == "bool":
+        if isinstance(raw, bool):
+            return raw
+        x = text.strip().lower()
+        if x in ("1", "true", "yes", "on", "enabled"):
+            return True
+        if x in ("0", "false", "no", "off", "disabled"):
+            return False
+        raise ValueError("Use on or off")
+    if t == "choice":
+        x = text.strip().lower()
+        for key, label in spec["choices"]:
+            if x in (key, label.lower()):
+                return key
+        raise ValueError("Choose one of: " + ", ".join(label for _, label in spec["choices"]))
+    if t == "role":
+        if text.strip().lower() in ("", "0", "off", "none"):
+            return ""
+        ids = _SNOWFLAKE.findall(text)
+        if len(ids) != 1:
+            raise ValueError("Give one role (its ID, or mention it), or 'off'")
+        return ids[0]
+    if t in ("roles", "channels"):
+        items = raw if isinstance(raw, list) else re.split(r"[\s,]+", text)
+        items = [str(i).strip() for i in items if str(i).strip()]
+        if len(items) == 1 and items[0].lower() in ("none", "off", "any"):
+            return []
+        ids = []
+        for i in items:
+            found = _SNOWFLAKE.findall(i)
+            if len(found) != 1:
+                raise ValueError(f"'{i}' isn't a {'role' if t == 'roles' else 'channel'} ID or mention")
+            if found[0] not in ids:
+                ids.append(found[0])
+        if len(ids) > 25:
+            raise ValueError("At most 25")
+        return ids
+    if t == "maps":
+        items = raw if isinstance(raw, list) else re.split(r"[|,\n]", text)
+        out = []
+        for i in items:
+            name = " ".join(str(i).split())
+            if not name:
+                continue
+            if len(name) > 60:
+                raise ValueError("Map names are at most 60 characters")
+            known = next((m for m in MAP_NAMES if m.lower() == name.lower()), name)
+            if known.lower() not in (o.lower() for o in out):
+                out.append(known)
+        if not out:
+            raise ValueError("Keep at least one map")
+        if len(out) > 40:
+            raise ValueError("At most 40 maps")
+        return out
+    raise ValueError("Unknown setting type")
+
+
+def _apply_website_setting(key: str, value):
+    """Use a website setting right away (value None = back to the .env default)."""
+    global BALANCE_ROLE_MODEL, HYBRID_MMR_WEIGHT, SUPPORT_WEIGHT_2V2, LEADERBOARD_SIZE
+    v = WEBSITE_DEFAULTS[key] if value is None else value
+    if key == "OCR_THREADS":
+        os.environ["OCR_THREADS"] = str(int(v))
+        sb = sys.modules.get("scoreboard")
+        if sb is not None:
+            sb._ocr = None   # rebuilt with the new core count on the next read
+    elif key == "DISCORD_LEADERBOARD_SIZE":
+        LEADERBOARD_SIZE = int(v)
+        schedule_leaderboard_push()
+    elif key == "BALANCE_ROLE_MODEL":
+        BALANCE_ROLE_MODEL = v
+    elif key == "HYBRID_MMR_WEIGHT":
+        HYBRID_MMR_WEIGHT = float(v)
+    elif key == "SUPPORT_WEIGHT_2V2":
+        SUPPORT_WEIGHT_2V2 = float(v)
+
+
+async def load_setting_overrides():
+    async for d in db.settings.find({}, {"_id": 0}):
+        spec = SETTING_BY_KEY.get(d.get("key"))
+        if spec and spec["app"] == "website":
+            try:
+                _apply_website_setting(spec["key"], parse_setting(spec, d.get("value")))
+            except ValueError:
+                logging.getLogger(__name__).warning("Ignoring the saved %s setting: not valid", spec["key"])
+
+
+async def _settings_rows(app: Optional[str] = None) -> list:
+    saved = {d["key"]: d async for d in db.settings.find({}, {"_id": 0})}
+    bot_defaults = ((await db.settings_meta.find_one({"id": "bot"}, {"_id": 0})) or {}).get("defaults") or {}
+    rows = []
+    for spec in SETTING_SPECS:
+        if app and spec["app"] != app:
+            continue
+        default = WEBSITE_DEFAULTS.get(spec["key"]) if spec["app"] == "website" else bot_defaults.get(spec["key"])
+        o = saved.get(spec["key"])
+        rows.append({**spec, "default": default, "value": o["value"] if o else default, "overridden": bool(o),
+                     "updated_by": o.get("updated_by") if o else None, "updated_at": o.get("updated_at") if o else None})
+    return rows
+
+
+class SettingIn(BaseModel):
+    value: object = None
+    by: Optional[str] = None   # bot only: the Discord admin who changed it
+
+
+async def _save_setting(key: str, raw, by: str, app: Optional[str] = None) -> dict:
+    spec = SETTING_BY_KEY.get(key)
+    if not spec or (app and spec["app"] != app):
+        raise HTTPException(404, "No such setting")
+    try:
+        value = parse_setting(spec, raw)
+    except ValueError as e:
+        raise HTTPException(400, f"{spec['label']}: {e}")
+    await db.settings.update_one({"key": key}, {"$set": {
+        "key": key, "value": value, "updated_by": by, "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    if spec["app"] == "website":
+        _apply_website_setting(key, value)
+    return next(r for r in await _settings_rows() if r["key"] == key)
+
+
+async def _reset_setting(key: str, app: Optional[str] = None) -> dict:
+    spec = SETTING_BY_KEY.get(key)
+    if not spec or (app and spec["app"] != app):
+        raise HTTPException(404, "No such setting")
+    await db.settings.delete_one({"key": key})
+    if spec["app"] == "website":
+        _apply_website_setting(key, None)
+    return next(r for r in await _settings_rows() if r["key"] == key)
+
+
+@api_router.get("/admin/settings")
+async def admin_settings(user: dict = Depends(admin_required)):
+    meta = (await db.settings_meta.find_one({"id": "bot"}, {"_id": 0})) or {}
+    return {"settings": await _settings_rows(), "groups": SETTING_GROUPS, "map_names": MAP_NAMES,
+            "bot": {"seen_at": meta.get("seen_at"), "roles": meta.get("roles") or [],
+                    "channels": meta.get("channels") or []} if BOT_SETTINGS else None}
+
+
+@api_router.put("/admin/settings/{key}")
+async def admin_set_setting(key: str, data: SettingIn, user: dict = Depends(admin_required)):
+    return await _save_setting(key, data.value, user.get("name") or user.get("email") or "admin")
+
+
+@api_router.delete("/admin/settings/{key}")
+async def admin_reset_setting(key: str, user: dict = Depends(admin_required)):
+    return await _reset_setting(key)
+
+
 app.include_router(api_router)
 
 # --------- CSV Exports ---------

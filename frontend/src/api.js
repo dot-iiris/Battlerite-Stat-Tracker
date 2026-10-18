@@ -84,6 +84,7 @@ const PREFETCH = {
   "/matchmaking": () => { api.get("/players"); api.get("/seasons"); },
   "/recap": () => { api.get("/seasons"); api.get("/stats/recap", { params: { days: 7 } }); },
   "/seasons": () => api.get("/seasons"),
+  "/settings": () => api.get("/admin/settings"),
   "/pending": () => {
     api.get("/link-requests");
   },
