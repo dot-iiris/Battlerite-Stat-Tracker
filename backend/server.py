@@ -340,7 +340,11 @@ async def startup():
     await db.champion_icons.create_index("champion")
     await db.ocr_feedback.create_index("created_at")
     await db.screenshots.create_index("sha256")
-    await db.settings.create_index("key", unique=True)
+    await db.admin_settings.create_index("key", unique=True)
+    try:   # an earlier version put this index on the wrong collection
+        await db.settings.drop_index("key_1")
+    except Exception:
+        pass
     await load_setting_overrides()
     _spawn(prune_screenshots())
     _spawn(_backfill_mmr_before())
@@ -4018,7 +4022,7 @@ def _apply_website_setting(key: str, value):
 
 
 async def load_setting_overrides():
-    async for d in db.settings.find({}, {"_id": 0}):
+    async for d in db.admin_settings.find({}, {"_id": 0}):
         spec = SETTING_BY_KEY.get(d.get("key"))
         if spec and spec["app"] == "website":
             try:
@@ -4028,7 +4032,7 @@ async def load_setting_overrides():
 
 
 async def _settings_rows(app: Optional[str] = None) -> list:
-    saved = {d["key"]: d async for d in db.settings.find({}, {"_id": 0})}
+    saved = {d["key"]: d async for d in db.admin_settings.find({}, {"_id": 0})}
     bot_defaults = ((await db.settings_meta.find_one({"id": "bot"}, {"_id": 0})) or {}).get("defaults") or {}
     rows = []
     for spec in SETTING_SPECS:
@@ -4054,7 +4058,7 @@ async def _save_setting(key: str, raw, by: str, app: Optional[str] = None) -> di
         value = parse_setting(spec, raw)
     except ValueError as e:
         raise HTTPException(400, f"{spec['label']}: {e}")
-    await db.settings.update_one({"key": key}, {"$set": {
+    await db.admin_settings.update_one({"key": key}, {"$set": {
         "key": key, "value": value, "updated_by": by, "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
     if spec["app"] == "website":
         _apply_website_setting(key, value)
@@ -4065,7 +4069,7 @@ async def _reset_setting(key: str, app: Optional[str] = None) -> dict:
     spec = SETTING_BY_KEY.get(key)
     if not spec or (app and spec["app"] != app):
         raise HTTPException(404, "No such setting")
-    await db.settings.delete_one({"key": key})
+    await db.admin_settings.delete_one({"key": key})
     if spec["app"] == "website":
         _apply_website_setting(key, None)
     return next(r for r in await _settings_rows() if r["key"] == key)
