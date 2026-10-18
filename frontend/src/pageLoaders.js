@@ -19,6 +19,9 @@ export const PAGE_LOADERS = {
   "/seasons": () => import("@/pages/Seasons"),
   "/settings": () => import("@/pages/Settings"),
   "/tournament": () => import("@/pages/Tournament"),
+  "/tournaments": () => import("@/pages/Tournaments"),
+  "/tournaments/:id": () => import("@/pages/TournamentView"),
+  "/stream/tournament/:id": () => import("@/pages/TournamentStream"),
 };
 
 export function preloadPageCode(path) {

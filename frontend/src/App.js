@@ -20,6 +20,9 @@ const Recap = lazy(PAGE_LOADERS["/recap"]);
 const Seasons = lazy(PAGE_LOADERS["/seasons"]);
 const Settings = lazy(PAGE_LOADERS["/settings"]);
 const Tournament = lazy(PAGE_LOADERS["/tournament"]);
+const Tournaments = lazy(PAGE_LOADERS["/tournaments"]);
+const TournamentView = lazy(PAGE_LOADERS["/tournaments/:id"]);
+const TournamentStream = lazy(PAGE_LOADERS["/stream/tournament/:id"]);
 const Pending = lazy(PAGE_LOADERS["/pending"]);
 const MyProfile = lazy(PAGE_LOADERS["/me"]);
 
@@ -67,6 +70,10 @@ function App() {
           <Route path="/seasons" element={<Protected><Seasons /></Protected>} />
           <Route path="/settings" element={<Protected adminOnly><Settings /></Protected>} />
           <Route path="/tournament" element={<Protected adminOnly><Tournament /></Protected>} />
+          <Route path="/tournaments" element={<Protected adminOnly><Tournaments /></Protected>} />
+          <Route path="/tournaments/:id" element={<Protected adminOnly><TournamentView /></Protected>} />
+          {/* stream overlays: no login (the link carries the tournament's stream key), no menus */}
+          <Route path="/stream/tournament/:id" element={<TournamentStream />} />
         </Routes>
         </Suspense>
       </BrowserRouter>

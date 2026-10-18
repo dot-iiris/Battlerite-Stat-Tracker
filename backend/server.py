@@ -183,6 +183,7 @@ class MatchCreate(BaseModel):
     notes: Optional[str] = ""
     played_at: Optional[str] = None
     screenshot_id: Optional[str] = None   # a screenshot read with /screenshots/read, attached on save
+    tournament_match_id: Optional[str] = None   # a game in a tournament match ("<tournament id>:<match id>")
 
 
 # --------- ELO ---------
@@ -1038,6 +1039,8 @@ async def create_match(data: MatchCreate, user: dict = Depends(admin_required)):
     """Log Match tab: save the match and post it to the Discord match log."""
     if data.format not in ACTIVE_FORMATS:
         raise HTTPException(400, "1v1 is no longer a format - log it as 2v2 or 3v3")
+    if data.tournament_match_id:   # a tournament game: kept with its tournament, out of the stats
+        return await _log_tournament_game(data, user.get("name") or user.get("email"))
     if data.screenshot_id:
         await _staged_screenshot(data.screenshot_id)   # check it before saving anything
     doc = await _insert_match(data)
@@ -3920,6 +3923,464 @@ async def tournament_balance(data: TournamentRequest, user: dict = Depends(admin
     return {"options": [show(r) for r in results], "format": data.format, "mode": data.mode,
             "role_model": "spread" if BALANCE_ROLE_MODEL == "spread" else "role_mmr"}
 
+
+
+# --------- Tournaments ---------
+# A tournament has teams, an optional league stage (round robin, Swiss or groups) and an optional
+# playoff bracket (single or double elimination, with or without a grand final reset). Its games are
+# kept in their own collection (tournament_games), apart from logged matches, so they never touch MMR or
+# the ranked / unranked stats - each tournament has stats of its own. They're entered on the website
+# (Log Match) or with /submit in Discord.
+# Series results, standings and the bracket are worked out from those games every time (see
+# tournaments.py), so editing or deleting a game moves through the bracket by itself.
+import tournaments as T_
+
+BEST_OF = (1, 3, 5, 7)
+
+
+class TournamentTeamIn(BaseModel):
+    name: str
+    player_ids: List[str]
+
+
+class TournamentLeagueIn(BaseModel):
+    type: Literal["round_robin", "swiss", "groups"]
+    best_of: int = 1
+    rounds: Optional[int] = None       # Swiss: how many rounds (default: enough to find a winner)
+    groups: int = 2                    # groups: how many
+    advance_per_group: int = 2         # groups: how many from each go to the playoffs
+
+
+class TournamentPlayoffsIn(BaseModel):
+    type: Literal["single", "double"]
+    grand_reset: bool = True           # double: the losers-bracket team must win the final twice
+    best_of: int = 1                   # early rounds
+    semis_best_of: Optional[int] = None
+    final_best_of: Optional[int] = None
+    teams: Optional[int] = None        # after a league: how many teams go through (default: all)
+
+
+class TournamentCreate(BaseModel):
+    name: str
+    format: Literal["2v2", "3v3"] = "3v3"
+    teams: List[TournamentTeamIn]
+    league: Optional[TournamentLeagueIn] = None
+    playoffs: Optional[TournamentPlayoffsIn] = None
+
+
+def _check_bo(*values):
+    for v in values:
+        if v is not None and v not in BEST_OF:
+            raise HTTPException(400, "Matches are best of 1, 3, 5 or 7")
+
+
+async def _tournament_match_check(tm_id: str, side_a: List[str], side_b: List[str], fmt: str) -> tuple:
+    """A game for a tournament match must be its two teams (either way round). -> (tournament id, match)"""
+    tid, _, mid = (tm_id or "").partition(":")
+    t = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not t:
+        raise HTTPException(404, "Tournament not found")
+    if fmt != t["format"]:
+        raise HTTPException(400, f"This tournament is {t['format']}")
+    view = await _tournament_view(t)
+    m = next((x for x in view["matches"] if x["id"] == mid), None)
+    if not m:
+        raise HTTPException(404, "Tournament match not found")
+    teams = {x["id"]: set(x["player_ids"]) for x in t["teams"]}
+    sides = [m.get("team1"), m.get("team2")]
+    if None in sides or T_.BYE in sides:
+        raise HTTPException(400, "Both teams of this tournament match aren't known yet")
+    if m["done"]:
+        raise HTTPException(409, "This tournament match is already decided")
+    if {frozenset(side_a), frozenset(side_b)} != {frozenset(teams[sides[0]]), frozenset(teams[sides[1]])}:
+        raise HTTPException(400, "The players don't match the two teams of this tournament match")
+    return tid, m
+
+
+async def _log_tournament_game(data: "MatchCreate", by: Optional[str], code: Optional[str] = None,
+                               extra: Optional[dict] = None) -> dict:
+    """Save a game of a tournament match. Tournament games are kept apart from logged matches: they
+    never move MMR and don't count in any ranked or unranked stats - only in their tournament's."""
+    team_a = [p for p in data.players if p.team == "A"]
+    team_b = [p for p in data.players if p.team == "B"]
+    size = {"1v1": 1, "2v2": 2, "3v3": 3}[data.format]
+    if len(team_a) != size or len(team_b) != size:
+        raise HTTPException(400, f"Expected {size} players per team for {data.format}")
+    if data.team_a_rounds == data.team_b_rounds:
+        raise HTTPException(400, "Rounds cannot be tied")
+    if len({p.player_id for p in data.players}) != len(data.players):
+        raise HTTPException(400, "A player can only appear once per match")
+    for label, team in (("A", team_a), ("B", team_b)):
+        if len({p.champion for p in team}) != len(team):
+            raise HTTPException(400, f"Team {label} cannot pick the same champion twice")
+    tid, _ = await _tournament_match_check(data.tournament_match_id, [p.player_id for p in team_a],
+                                           [p.player_id for p in team_b], data.format)
+    doc = {"id": str(uuid.uuid4()), "tournament_id": tid, "tournament_match_id": data.tournament_match_id,
+           "format": data.format, "team_a_rounds": data.team_a_rounds, "team_b_rounds": data.team_b_rounds,
+           "winner_team": "A" if data.team_a_rounds > data.team_b_rounds else "B",
+           "players": [{"player_id": p.player_id, "champion": p.champion, "role": p.role, "team": p.team,
+                        "stats": p.stats.model_dump() if p.stats else None} for p in data.players],
+           "notes": data.notes or "", "played_at": data.played_at or _now_iso(), "code": code,
+           "logged_by": by, "logged_at": _now_iso(), **(extra or {})}
+    await db.tournament_games.insert_one(doc)
+    doc.pop("_id", None)
+    _spawn(_tournament_progress(tid))
+    return doc
+
+
+async def _tournament_games(t: dict) -> Dict[str, list]:
+    """Logged games of a tournament, by tournament match: [{winner, rounds, match_id, code, played_at}]"""
+    team_of = {pid: x["id"] for x in t["teams"] for pid in x["player_ids"]}
+    out: Dict[str, list] = {}
+    async for m in db.tournament_games.find({"tournament_id": t["id"]}, {"_id": 0, "players.stats": 0}).sort("played_at", 1):
+        side = {}
+        for s in ("A", "B"):
+            votes = [team_of.get(p["player_id"]) for p in m["players"] if p["team"] == s]
+            side[s] = max(set(votes), key=votes.count) if votes else None
+        if not side["A"] or not side["B"] or side["A"] == side["B"]:
+            continue
+        mid = (m.get("tournament_match_id") or "").partition(":")[2]
+        out.setdefault(mid, []).append({
+            "winner": side[m["winner_team"]], "rounds": {side["A"]: m["team_a_rounds"], side["B"]: m["team_b_rounds"]},
+            "game_id": m["id"], "code": m.get("code"), "played_at": m["played_at"],
+            "players": [{"player_id": p["player_id"], "champion": p["champion"], "team": side[p["team"]]} for p in m["players"]]})
+    return out
+
+
+def _league_total_rounds(t: dict) -> int:
+    lg = t.get("league") or {}
+    if lg.get("type") != "swiss":
+        return max((m["round"] for m in t["matches"] if m["stage"] == "league"), default=0)
+    return lg.get("rounds") or max(1, math.ceil(math.log2(max(2, len(t["teams"])))))
+
+
+async def _tournament_view(t: dict) -> dict:
+    games = await _tournament_games(t)
+    seeds_default = [x["id"] for x in sorted(t["teams"], key=lambda x: x["seed"])]
+    res = T_.resolve(t["matches"], t.get("playoff_seeds") or seeds_default, lambda mid: games.get(mid, []),
+                     t.get("forfeits") or {})
+    names = {x["id"]: x["name"] for x in t["teams"]}
+    names[T_.BYE] = "Bye"
+    seed_of = {x["id"]: x["seed"] for x in t["teams"]}
+    league = [m for m in t["matches"] if m["stage"] == "league"]
+    lg = t.get("league") or {}
+    tables = []
+    if league:
+        if lg.get("type") == "groups":
+            for g, ids in (t.get("groups") or {}).items():
+                tables.append({"group": g, "rows": T_.standings(ids, [m for m in league if m.get("group") == g], res, seed_of)})
+        else:
+            tables.append({"group": None, "rows": T_.standings(seeds_default, league, res, seed_of,
+                                                               swiss=lg.get("type") == "swiss")})
+    for tb in tables:
+        for row in tb["rows"]:
+            row["name"] = names.get(row["team"])
+            row.pop("opponents", None)
+    total = _league_total_rounds(t)
+    played_rounds = max((m["round"] for m in league), default=0)
+    league_done = bool(league) and played_rounds >= total and all(res[m["id"]]["done"] for m in league)
+    matches = []
+    for m in t["matches"]:
+        r = res[m["id"]]
+        matches.append({**{k: v for k, v in m.items() if k not in ("team1", "team2")}, **r,
+                        "team1_name": names.get(r["team1"]), "team2_name": names.get(r["team2"]),
+                        "winner_name": names.get(r["winner"]), "game_list": games.get(m["id"], [])})
+    champ = T_.champion(t["matches"], res)
+    if not champ and league_done and not t.get("playoffs") and len(tables) == 1 and tables[0]["rows"]:
+        champ = tables[0]["rows"][0]["team"]   # league only: the top of the table wins
+    return {**{k: v for k, v in t.items() if k not in ("matches",)}, "matches": matches, "standings": tables,
+            "league_rounds": total, "league_round": played_rounds, "league_done": league_done,
+            "champion": champ, "champion_name": names.get(champ)}
+
+
+async def _tournament_progress(tid: str):
+    """After a result: start the next Swiss round when one finishes, and mark the tournament won."""
+    t = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not t:
+        return
+    view = await _tournament_view(t)
+    upd = {}
+    lg = t.get("league") or {}
+    league = [m for m in view["matches"] if m["stage"] == "league"]
+    if t["status"] == "league" and lg.get("type") == "swiss" and view["league_round"] < view["league_rounds"] \
+            and all(m["done"] for m in league):
+        table = view["standings"][0]["rows"] if view["standings"] else None
+        played = {frozenset((m["team1"], m["team2"])) for m in league if m.get("team2")}
+        had_bye = {m["team1"] for m in league if m.get("bye")}
+        new = T_.swiss_round([x["id"] for x in sorted(t["teams"], key=lambda x: x["seed"])], view["league_round"] + 1,
+                             lg.get("best_of", 1), table, played, had_bye)
+        upd["matches"] = t["matches"] + new
+    if view["champion"] and t["status"] != "finished":
+        upd.update(status="finished", finished_at=_now_iso())
+    elif not view["champion"] and t["status"] == "finished":
+        upd["status"] = "playoffs" if any(m["stage"] == "playoffs" for m in t["matches"]) else "league"
+    if upd:
+        await db.tournaments.update_one({"id": tid}, {"$set": upd})
+
+
+async def _tournament_or_404(tid: str) -> dict:
+    t = await db.tournaments.find_one({"id": tid}, {"_id": 0})
+    if not t:
+        raise HTTPException(404, "Tournament not found")
+    return t
+
+
+@api_router.post("/tournaments")
+async def create_tournament(data: TournamentCreate, user: dict = Depends(admin_required)):
+    name = " ".join(data.name.split())[:80]
+    if not name:
+        raise HTTPException(400, "Give the tournament a name")
+    size = {"2v2": 2, "3v3": 3}[data.format]
+    if len(data.teams) < 2:
+        raise HTTPException(400, "A tournament needs at least 2 teams")
+    if len(data.teams) > 64:
+        raise HTTPException(400, "At most 64 teams")
+    if not data.league and not data.playoffs:
+        raise HTTPException(400, "Choose a league stage, playoffs, or both")
+    seen, team_names, teams = set(), set(), []
+    for n, tm in enumerate(data.teams, 1):
+        tname = " ".join(tm.name.split())[:40] or f"Team {n}"
+        if tname.lower() in team_names:
+            raise HTTPException(400, f"Two teams are called '{tname}'")
+        team_names.add(tname.lower())
+        ids = list(dict.fromkeys(tm.player_ids))
+        if len(ids) != size:
+            raise HTTPException(400, f"{tname} needs {size} players for {data.format}")
+        for pid in ids:
+            if pid in seen:
+                raise HTTPException(400, "A player can only be in one team")
+            seen.add(pid)
+            if not await db.players.find_one({"id": pid}, {"_id": 1}):
+                raise HTTPException(404, f"Player {pid} not found")
+        teams.append({"id": f"T{n}", "name": tname, "player_ids": ids, "seed": n})
+    order = [x["id"] for x in teams]
+    matches, groups = [], None
+    lg = data.league.model_dump() if data.league else None
+    po = data.playoffs.model_dump() if data.playoffs else None
+    if lg:
+        _check_bo(lg["best_of"])
+        if lg["type"] == "round_robin":
+            matches = T_.round_robin(order, lg["best_of"])
+        elif lg["type"] == "groups":
+            if not 2 <= lg["groups"] <= len(teams) // 2:
+                raise HTTPException(400, "Each group needs at least 2 teams")
+            groups = T_.split_groups(order, lg["groups"])
+            for g, ids in groups.items():
+                matches += T_.round_robin(ids, lg["best_of"], g)
+            if po:
+                lg["advance_per_group"] = max(1, min(lg["advance_per_group"], min(len(x) for x in groups.values())))
+        else:
+            if lg["rounds"] is not None and not 1 <= lg["rounds"] <= len(teams) - 1:
+                raise HTTPException(400, f"Swiss: between 1 and {len(teams) - 1} rounds")
+            matches = T_.swiss_round(order, 1, lg["best_of"])
+    if po:
+        _check_bo(po["best_of"], po["semis_best_of"], po["final_best_of"])
+        if po["teams"] is not None and not 2 <= po["teams"] <= len(teams):
+            raise HTTPException(400, f"Between 2 and {len(teams)} teams can go through to the playoffs")
+        if not lg:
+            matches = T_.build_playoffs(len(teams), po["type"], po["grand_reset"], po["best_of"],
+                                        po["semis_best_of"], po["final_best_of"])
+    doc = {"id": str(uuid.uuid4())[:8], "name": name, "format": data.format,
+           "stream_key": secrets.token_urlsafe(12), "teams": teams, "league": lg, "playoffs": po,
+           "groups": groups, "matches": matches, "forfeits": {}, "playoff_seeds": None if lg else order,
+           "status": "league" if lg else "playoffs", "created_at": _now_iso(),
+           "created_by": user.get("name") or user.get("email")}
+    await db.tournaments.insert_one(doc)
+    doc.pop("_id", None)
+    return await _tournament_view(doc)
+
+
+# While tournaments are in preview, only admins see them - except a stream overlay, which can't log
+# in: its link carries the tournament's stream key.
+async def _tournament_for_viewer(tid: str, request: Request, key: Optional[str]) -> dict:
+    t = await _tournament_or_404(tid)
+    if key and t.get("stream_key") and secrets.compare_digest(key, t["stream_key"]):
+        return t
+    try:
+        await admin_required(request)
+    except HTTPException:
+        raise HTTPException(404, "Tournament not found")
+    return t
+
+
+@api_router.get("/tournaments")
+async def list_tournaments(user: dict = Depends(admin_required)):
+    out = []
+    async for t in db.tournaments.find({}, {"_id": 0}).sort("created_at", -1):
+        champ = None
+        if t["status"] == "finished":
+            champ = (await _tournament_view(t))["champion_name"]
+        out.append({k: t.get(k) for k in ("id", "name", "format", "status", "created_at", "finished_at")}
+                   | {"teams": len(t["teams"]), "champion_name": champ,
+                      "games": await db.tournament_games.count_documents({"tournament_id": t["id"]}),
+                      "league": (t.get("league") or {}).get("type"), "playoffs": (t.get("playoffs") or {}).get("type")})
+    return out
+
+
+@api_router.get("/tournaments/{tid}")
+async def get_tournament(tid: str, request: Request, key: Optional[str] = None):
+    return await _tournament_full(await _tournament_for_viewer(tid, request, key))
+
+
+async def _tournament_full(t: dict) -> dict:
+    view = await _tournament_view(t)
+    pnames = {p["id"]: p["name"] for p in await db.players.find(
+        {"id": {"$in": [pid for x in t["teams"] for pid in x["player_ids"]]}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)}
+    for x in view["teams"]:
+        x["players"] = [{"id": pid, "name": pnames.get(pid, "?")} for pid in x["player_ids"]]
+    return view
+
+
+@api_router.get("/tournaments/{tid}/stats")
+async def tournament_stats(tid: str, request: Request, key: Optional[str] = None):
+    t = await _tournament_for_viewer(tid, request, key)
+    team_of = {pid: x["id"] for x in t["teams"] for pid in x["player_ids"]}
+    names = {p["id"]: p["name"] for p in await db.players.find({"id": {"$in": list(team_of)}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)}
+    tnames = {x["id"]: x["name"] for x in t["teams"]}
+    rows = {pid: {"player_id": pid, "name": names.get(pid, "?"), "team": tnames.get(team_of[pid]), "games": 0, "wins": 0,
+                  "champions": {}, "stat_games": 0, "score": 0, "damage": 0, "protection": 0, "disables": 0} for pid in team_of}
+    games = 0
+    async for m in db.tournament_games.find({"tournament_id": tid}, {"_id": 0}):
+        games += 1
+        for p in m["players"]:
+            r = rows.get(p["player_id"])
+            if not r:
+                continue
+            r["games"] += 1
+            r["wins"] += p["team"] == m["winner_team"]
+            r["champions"][p["champion"]] = r["champions"].get(p["champion"], 0) + 1
+            st = p.get("stats") or {}
+            if any(st.get(k) is not None for k in STAT_FIELDS_ALL):
+                r["stat_games"] += 1
+                for k in STAT_FIELDS_ALL:
+                    r[k] += st.get(k) or 0
+    players = []
+    for r in rows.values():
+        n = r.pop("stat_games")
+        for k in STAT_FIELDS_ALL:
+            r[k] = round(r[k] / n, 1) if n else None
+        r["champions"] = sorted(r["champions"].items(), key=lambda x: -x[1])
+        r["winrate"] = round(r["wins"] / r["games"] * 100) if r["games"] else None
+        players.append(r)
+    players.sort(key=lambda r: (-r["games"], r["name"]))
+    leaders = {k: sorted([r for r in players if r[k] is not None], key=lambda r: -r[k])[:3] for k in STAT_FIELDS_ALL}
+    champs = {}
+    for r in players:
+        for c, n in r["champions"]:
+            champs[c] = champs.get(c, 0) + n
+    return {"games": games, "players": players, "leaders": leaders,
+            "champions": sorted(champs.items(), key=lambda x: -x[1])}
+
+
+STAT_FIELDS_ALL = ("score", "damage", "protection", "disables")
+
+
+class TournamentEdit(BaseModel):
+    name: Optional[str] = None
+    team_names: Optional[Dict[str, str]] = None
+
+
+@api_router.patch("/tournaments/{tid}")
+async def edit_tournament(tid: str, data: TournamentEdit, user: dict = Depends(admin_required)):
+    t = await _tournament_or_404(tid)
+    upd = {}
+    if data.name is not None and " ".join(data.name.split()):
+        upd["name"] = " ".join(data.name.split())[:80]
+    if data.team_names:
+        teams = [dict(x) for x in t["teams"]]
+        for x in teams:
+            new = " ".join((data.team_names.get(x["id"]) or "").split())[:40]
+            if new:
+                x["name"] = new
+        if len({x["name"].lower() for x in teams}) != len(teams):
+            raise HTTPException(400, "Two teams would have the same name")
+        upd["teams"] = teams
+    if upd:
+        await db.tournaments.update_one({"id": tid}, {"$set": upd})
+    return await _tournament_full(await _tournament_or_404(tid))
+
+
+@api_router.delete("/tournaments/{tid}")
+async def delete_tournament(tid: str, user: dict = Depends(admin_required)):
+    """The tournament goes, with its games (they aren't logged anywhere else)."""
+    await _tournament_or_404(tid)
+    await db.tournament_games.delete_many({"tournament_id": tid})
+    await db.tournaments.delete_one({"id": tid})
+    return {"ok": True}
+
+
+@api_router.delete("/tournaments/{tid}/games/{gid}")
+async def delete_tournament_game(tid: str, gid: str, user: dict = Depends(admin_required)):
+    """Remove a wrongly entered game; the series, standings and bracket follow."""
+    res = await db.tournament_games.delete_one({"id": gid, "tournament_id": tid})
+    if not res.deleted_count:
+        raise HTTPException(404, "Game not found")
+    await _tournament_progress(tid)
+    return await _tournament_full(await _tournament_or_404(tid))
+
+
+class ForfeitIn(BaseModel):
+    winner: Optional[str] = None   # team id; None clears the forfeit
+
+
+@api_router.post("/tournaments/{tid}/matches/{mid}/forfeit")
+async def tournament_forfeit(tid: str, mid: str, data: ForfeitIn, user: dict = Depends(admin_required)):
+    t = await _tournament_or_404(tid)
+    m = next((x for x in (await _tournament_view(t))["matches"] if x["id"] == mid), None)
+    if not m:
+        raise HTTPException(404, "Tournament match not found")
+    forfeits = dict(t.get("forfeits") or {})
+    if data.winner is None:
+        forfeits.pop(mid, None)
+    elif data.winner not in (m.get("team1"), m.get("team2")) or data.winner == T_.BYE:
+        raise HTTPException(400, "The winner must be one of the match's teams")
+    else:
+        forfeits[mid] = data.winner
+    await db.tournaments.update_one({"id": tid}, {"$set": {"forfeits": forfeits}})
+    await _tournament_progress(tid)
+    return await _tournament_full(await _tournament_or_404(tid))
+
+
+@api_router.post("/tournaments/{tid}/next-round")
+async def tournament_next_round(tid: str, user: dict = Depends(admin_required)):
+    await _tournament_or_404(tid)
+    await _tournament_progress(tid)
+    return await _tournament_full(await _tournament_or_404(tid))
+
+
+class PlayoffStart(BaseModel):
+    seeds: Optional[List[str]] = None   # team ids in seed order (default: from the league standings)
+
+
+@api_router.post("/tournaments/{tid}/start-playoffs")
+async def tournament_start_playoffs(tid: str, data: PlayoffStart, user: dict = Depends(admin_required)):
+    t = await _tournament_or_404(tid)
+    po = t.get("playoffs")
+    if not po:
+        raise HTTPException(400, "This tournament has no playoffs")
+    if any(m["stage"] == "playoffs" for m in t["matches"]):
+        raise HTTPException(409, "The playoffs have already started")
+    view = await _tournament_view(t)
+    if data.seeds:
+        ids = {x["id"] for x in t["teams"]}
+        seeds = list(dict.fromkeys(data.seeds))
+        if not set(seeds) <= ids or len(seeds) < 2:
+            raise HTTPException(400, "Seeds must be at least 2 of the tournament's teams")
+    else:
+        tables = view["standings"]
+        if (t.get("league") or {}).get("type") == "groups":
+            per = (t["league"] or {}).get("advance_per_group", 2)
+            seeds = []
+            for rank in range(per):   # all group winners first, then the runners-up... (alternating order)
+                tier = [tb["rows"][rank]["team"] for tb in tables if rank < len(tb["rows"])]
+                seeds += tier if rank % 2 == 0 else tier[::-1]
+        else:
+            seeds = [r["team"] for r in tables[0]["rows"]] if tables else [x["id"] for x in t["teams"]]
+        seeds = seeds[:po.get("teams") or len(seeds)]
+    matches = t["matches"] + T_.build_playoffs(len(seeds), po["type"], po["grand_reset"], po["best_of"],
+                                               po.get("semis_best_of"), po.get("final_best_of"))
+    await db.tournaments.update_one({"id": tid}, {"$set": {"matches": matches, "playoff_seeds": seeds, "status": "playoffs"}})
+    return await _tournament_full(await _tournament_or_404(tid))
 
 
 app.include_router(api_router)
