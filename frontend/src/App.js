@@ -19,6 +19,7 @@ const Matchmaking = lazy(PAGE_LOADERS["/matchmaking"]);
 const Recap = lazy(PAGE_LOADERS["/recap"]);
 const Seasons = lazy(PAGE_LOADERS["/seasons"]);
 const Settings = lazy(PAGE_LOADERS["/settings"]);
+const Tournament = lazy(PAGE_LOADERS["/tournament"]);
 const Pending = lazy(PAGE_LOADERS["/pending"]);
 const MyProfile = lazy(PAGE_LOADERS["/me"]);
 
@@ -65,6 +66,7 @@ function App() {
           <Route path="/recap" element={<Protected><Recap /></Protected>} />
           <Route path="/seasons" element={<Protected><Seasons /></Protected>} />
           <Route path="/settings" element={<Protected adminOnly><Settings /></Protected>} />
+          <Route path="/tournament" element={<Protected adminOnly><Tournament /></Protected>} />
         </Routes>
         </Suspense>
       </BrowserRouter>
