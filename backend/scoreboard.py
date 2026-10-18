@@ -22,28 +22,45 @@ ICON_SIZE = 20             # reference icons are compared at 20x20 pixels
 ICON_MATCH_MAX = 0.12      # mean colour difference (0-1) to accept an icon match
 ICON_MATCH_SURE = 0.08     # below this the portrait wins over the OCR'd label
 
-_ocr = None
+_ocr = None   # kind -> RapidOCR (set to None to rebuild them, e.g. after OCR_THREADS changes)
+# Finding where text is ("detection") is the slow part, and its cost grows with the picture's size.
+#   full:  detection at the size given (small pictures are enlarged to 736 px first) - low-res screenshots
+#   fast:  detection on a copy shrunk to FAST_DETECT_PX; each piece of text found is still read from the
+#          full-size picture - plenty for screenshots of 1080p and up, and several times quicker
+#   small: for narrow strips (the round timer) - only enlarged to 320 px, not 736
+FAST_DETECT_PX = 960
+_DET = {"full": ("min", 736), "fast": ("max", FAST_DETECT_PX), "small": ("min", 320)}
 
 
-def _get_ocr():
+def _get_ocr(kind: str = "full"):
     global _ocr
     if _ocr is None:
+        _ocr = {}
+    if kind not in _ocr:
         from rapidocr import RapidOCR  # optional dependency, loaded on first use
         # no upside-down check: scoreboards are never upside down, and the check flipped "99" into "66"
         # one CPU core at most (OCR_THREADS to change it), so a screenshot never takes over the server
         threads = int(os.environ.get("OCR_THREADS") or 1)
-        _ocr = RapidOCR(params={"Global.log_level": "error", "Global.use_cls": False,
-                                "EngineConfig.onnxruntime.intra_op_num_threads": threads,
-                                "EngineConfig.onnxruntime.inter_op_num_threads": 1})
-    return _ocr
+        limit_type, limit = _DET[kind]
+        _ocr[kind] = RapidOCR(params={"Global.log_level": "error", "Global.use_cls": False,
+                                      "Det.limit_type": limit_type, "Det.limit_side_len": limit,
+                                      "EngineConfig.onnxruntime.intra_op_num_threads": threads,
+                                      "EngineConfig.onnxruntime.inter_op_num_threads": 1})
+    return _ocr[kind]
 
 
-def _ocr_run(img_rgb):
+def _ocr_run(img_rgb, kind: str = "full"):
     """[(box, text)] for every piece of text RapidOCR finds."""
-    r = _get_ocr()(img_rgb)
+    r = _get_ocr(kind)(img_rgb, use_det=True, use_cls=False, use_rec=True)
     if r is None or r.boxes is None or r.txts is None:
         return []
     return list(zip(r.boxes.tolist(), r.txts))
+
+
+def _read_line(img_rgb) -> List[str]:
+    """Read a picture that holds one line of text, skipping detection (a few milliseconds)."""
+    r = _get_ocr("full")(img_rgb, use_det=False, use_cls=False, use_rec=True)
+    return [t for t in (getattr(r, "txts", None) or []) if t]
 
 
 def _load_image(image):
@@ -85,10 +102,12 @@ def _tokens(img, f: float, whole: bool = False) -> List[dict]:
     else:
         x0, y0 = int(w * 0.18), int(h * 0.12)
         crop = img[y0:int(h * 0.88), x0:int(w * 0.82)]
+    # a big enough original: find the text on a smaller copy (much quicker), read it at full size
+    kind = "fast" if max(crop.shape[:2]) >= 1200 else "full"
     if f != 1.0:
         crop = cv2.resize(crop, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
     out = []
-    for box, text in _ocr_run(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)):
+    for box, text in _ocr_run(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB), kind):
         xs = [p[0] / f + x0 for p in box]
         ys = [p[1] / f + y0 for p in box]
         out.append({"text": text.strip(), "x": sum(xs) / 4, "y": sum(ys) / 4,
@@ -125,7 +144,7 @@ def _timer_x(img) -> Optional[float]:
     f = max(1.0, 2400.0 / h)
     if f > 1.0:
         band = cv2.resize(band, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
-    for box, text in _ocr_run(cv2.cvtColor(band, cv2.COLOR_BGR2RGB)):
+    for box, text in _ocr_run(cv2.cvtColor(band, cv2.COLOR_BGR2RGB), "small"):
         if re.fullmatch(r"\d{1,2}:\d{2}", text.strip()):
             return sum(p[0] for p in box) / 4 / f + x0
     return None
@@ -354,14 +373,23 @@ def _label_closeup(img, box: List[int], champion_names: List[str]) -> Optional[s
     if crop.size == 0:
         return None
     crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+
+    def best_of(texts):
+        best, best_s = None, 0.0
+        for text in texts:
+            for c in champion_names:
+                sc = similarity(c, text)
+                if sc > best_s:
+                    best, best_s = c, sc
+        return best if best_s >= 0.75 else None
+
+    # quick try: read the crop (and its lower part, where the label is) as a single line of text
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    quick = best_of(_read_line(rgb) + _read_line(rgb[int(rgb.shape[0] * 0.35):]))
+    if quick:
+        return quick
     crop = cv2.copyMakeBorder(crop, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=(0, 0, 0))
-    best, best_s = None, 0.0
-    for _, text in _ocr_run(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)):
-        for c in champion_names:
-            sc = similarity(c, text)
-            if sc > best_s:
-                best, best_s = c, sc
-    return best if best_s >= 0.75 else None
+    return best_of(text for _, text in _ocr_run(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)))
 
 
 def _filled(p: dict) -> int:
