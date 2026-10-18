@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "@/api";
 import { toast } from "sonner";
-import { Trophy, Users, X, Zap, Copy, Ban, Link2, Armchair } from "lucide-react";
+import { Trophy, Users, X, Zap, Copy, Ban, Link2, Armchair, Gauge } from "lucide-react";
 import SeasonSelect, { newestSeason } from "@/components/SeasonSelect";
 
 // Admins: split a group of players into the most even teams for a tournament. The pool, subs and
@@ -26,6 +26,8 @@ export default function Tournament() {
   const [pool, setPool] = useState(() => new Set(saved.pool || []));
   const [subs, setSubs] = useState(() => new Set(saved.subs || []));
   const [rules, setRules] = useState(() => saved.rules || []);   // [{a, b, kind: "apart" | "together"}]
+  const [overrides, setOverrides] = useState(() => saved.overrides || {});   // player id -> MMR, tournament only
+  const [ovDraft, setOvDraft] = useState({ id: "", mmr: "" });
   const [format, setFormat] = useState(saved.format || "3v3");
   const [mode, setMode] = useState(saved.mode || "hybrid");
   const [draft, setDraft] = useState({ a: "", b: "", kind: "apart" });
@@ -33,7 +35,7 @@ export default function Tournament() {
   const [option, setOption] = useState(0);
   const [running, setRunning] = useState(false);
 
-  useEffect(() => { save({ pool: [...pool], subs: [...subs], rules, format, mode }); }, [pool, subs, rules, format, mode]);
+  useEffect(() => { save({ pool: [...pool], subs: [...subs], rules, format, mode, overrides }); }, [pool, subs, rules, format, mode, overrides]);
 
   useEffect(() => {
     Promise.all([api.get("/players"), api.get("/seasons")]).then(([p, s]) => {
@@ -42,6 +44,7 @@ export default function Tournament() {
       setPool((cur) => new Set([...cur].filter((id) => known.has(id))));
       setSubs((cur) => new Set([...cur].filter((id) => known.has(id))));
       setRules((cur) => cur.filter((r) => known.has(r.a) && known.has(r.b)));
+      setOverrides((cur) => Object.fromEntries(Object.entries(cur).filter(([id]) => known.has(id))));
       setSeasons(s.data);
       setSeasonId(newestSeason(s.data)?.id || "");
     }).catch(() => toast.error("Couldn't load players"));
@@ -75,6 +78,15 @@ export default function Tournament() {
     setResult(null);
   };
 
+  const addOverride = () => {
+    const v = Number(ovDraft.mmr);
+    if (!ovDraft.id || ovDraft.mmr === "" || !Number.isFinite(v)) return toast.error("Pick a player and enter an MMR");
+    if (v < 0 || v > 4000) return toast.error("MMR must be between 0 and 4000");
+    setOverrides({ ...overrides, [ovDraft.id]: v });
+    setOvDraft({ id: "", mmr: "" });
+    setResult(null);
+  };
+
   const run = async () => {
     setRunning(true);
     try {
@@ -83,6 +95,7 @@ export default function Tournament() {
         subs: [...subs].filter((id) => pool.has(id)),
         apart: rules.filter((r) => r.kind === "apart").map((r) => [r.a, r.b]),
         together: rules.filter((r) => r.kind === "together").map((r) => [r.a, r.b]),
+        mmr_overrides: Object.fromEntries(Object.entries(overrides).filter(([id]) => pool.has(id))),
       });
       setResult(data);
       setOption(0);
@@ -214,6 +227,35 @@ export default function Tournament() {
         )}
       </div>
 
+      <div className="hud-card p-5 space-y-3">
+        <h3 className="font-heading text-lg font-bold uppercase flex items-center gap-2"><Gauge className="w-4 h-4 text-cyan-400" /> MMR overrides</h3>
+        <p className="text-xs text-slate-400">Use a different MMR for someone in this tournament only - e.g. a new player who's better than their 1200 start.
+          Their real MMR isn't changed. Role adjustments still apply on top.</p>
+        <div className="flex flex-wrap gap-2 items-center">
+          <select value={ovDraft.id} onChange={(e) => setOvDraft({ ...ovDraft, id: e.target.value })} className={sel} data-testid="tour-ov-player">
+            <option value="">Player…</option>
+            {inPool.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <input type="number" min="0" max="4000" value={ovDraft.mmr} onChange={(e) => setOvDraft({ ...ovDraft, mmr: e.target.value })}
+            onKeyDown={(e) => e.key === "Enter" && addOverride()} placeholder="MMR" className={`${sel} w-28`} data-testid="tour-ov-mmr" />
+          <button onClick={addOverride} className="text-xs font-mono-hud uppercase text-cyan-400 border border-cyan-400 px-3 py-2 rounded hover:bg-cyan-400/10" data-testid="tour-ov-add">Set MMR</button>
+        </div>
+        {Object.keys(overrides).filter((id) => pool.has(id)).length === 0 ? (
+          <div className="text-xs text-slate-500">No overrides - everyone uses their season MMR.</div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(overrides).filter(([id]) => pool.has(id)).map(([id, v]) => (
+              <span key={id} className="inline-flex items-center gap-1.5 text-xs font-mono-hud px-2 py-1 rounded border border-[#FFB800]/50 bg-[#0C101B] text-[#FFB800]" data-testid={`tour-ov-${id}`}>
+                {name(id)}: {v}
+                <button onClick={() => { const n = { ...overrides }; delete n[id]; setOverrides(n); setResult(null); }} className="text-slate-500 hover:text-[#FF2E55]" aria-label="Remove override">
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
       <button onClick={run} disabled={running || teams < 2}
         className="btn-glow bg-cyan-400 hover:bg-cyan-300 text-black font-mono-hud font-bold uppercase tracking-wider px-6 py-3 rounded flex items-center gap-2 disabled:opacity-40"
         data-testid="tour-run">
@@ -249,7 +291,8 @@ export default function Tournament() {
                     <span className="font-medium">{p.name}</span>
                     <span className="flex items-center gap-3 font-mono-hud text-xs">
                       {p.role && <span className={roleColor(p.role)}>{p.role}</span>}
-                      <span className="text-slate-400 w-10 text-right">{p.mmr}</span>
+                      <span className={`w-10 text-right ${p.overridden ? "text-[#FFB800]" : "text-slate-400"}`}
+                        title={p.overridden ? `Set for this tournament (season MMR ${p.season_mmr})` : "Season MMR"}>{p.mmr}{p.overridden ? "*" : ""}</span>
                     </span>
                   </div>
                 ))}
@@ -263,6 +306,9 @@ export default function Tournament() {
                 <span key={s.id} className="mr-3">{s.name} <span className="text-xs text-slate-500">{s.chosen ? "(marked)" : "(picked to keep teams even)"}</span></span>
               ))}
             </div>
+          )}
+          {shown.teams.some((t) => t.players.some((p) => p.overridden)) && (
+            <div className="text-xs text-[#FFB800]">* MMR set for this tournament</div>
           )}
           {result.role_model !== "spread" && mode !== "mmr" && (
             <div className="text-xs text-slate-500">Roles shown are each team's suggested line-up.</div>
