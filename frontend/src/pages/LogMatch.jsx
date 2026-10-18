@@ -280,7 +280,7 @@ export default function LogMatch() {
           <Award className="w-5 h-5 text-cyan-400" />
           <div className="text-sm">
             <div className="font-semibold">{tm.t.name} · {tm.m.label || `Round ${tm.m.round}`} · game {tm.m.wins1 + tm.m.wins2 + 1}{tm.m.best_of > 1 ? ` (best of ${tm.m.best_of}, ${tm.m.wins1}-${tm.m.wins2} so far)` : ""}</div>
-            <div className="text-xs text-slate-400">Team A is {tm.m.team1_name}, Team B is {tm.m.team2_name} (swap them if the screenshot has them the other way round). It's kept with the tournament only - no MMR change, and it isn't in the ranked or unranked stats.</div>
+            <div className="text-xs text-slate-400">Team A is {tm.m.team1_name}, Team B is {tm.m.team2_name} (swap them if the screenshot has them the other way round). It's kept with the tournament, out of the ranked and unranked stats{tm.t.counts_for_mmr ? " - this tournament counts for MMR, so it also moves the players' MMR" : " - no MMR change"}.</div>
           </div>
           <Link to={`/tournaments/${tm.t.id}?tab=matches`} className="ml-auto text-xs font-mono-hud uppercase text-slate-400 hover:text-cyan-400">Back to the tournament</Link>
         </div>

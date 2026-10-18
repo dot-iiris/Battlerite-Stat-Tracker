@@ -93,7 +93,7 @@ function MatchesTab({ t, isAdmin, act, focus }) {
     <div className="space-y-5">
       {isAdmin && (
         <div className="text-xs text-slate-500">
-          Players in Discord can <span className="font-mono-hud text-slate-300">/submit</span> each game of their next tournament match (when they're not in a lobby), or enter a game here. Games are kept with the tournament and never touch MMR or the ranked and unranked stats.
+          Players in Discord can <span className="font-mono-hud text-slate-300">/submit</span> each game of their next tournament match (when they're not in a lobby), or enter a game here. Games are kept with the tournament, out of the ranked and unranked stats{t.counts_for_mmr ? " - but they do move MMR (as labelled adjustments in the active ranked season), and deleting a game takes its MMR change back" : ""}.
         </div>
       )}
       {sections.map((s) => (
@@ -174,6 +174,7 @@ function StatsTab({ tid }) {
             <tr className="text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 text-right">
               <th className="px-3 py-2 text-left">Player</th><th className="px-3 py-2 text-left">Team</th>
               <th className="px-3 py-2">Games</th><th className="px-3 py-2">Win %</th>
+              {s.players.some((r) => r.mmr_change != null) && <th className="px-3 py-2">MMR</th>}
               {STATS.map(([k, l]) => <th key={k} className="px-3 py-2">{l}</th>)}
               <th className="px-3 py-2 text-left">Champions</th>
             </tr>
@@ -185,6 +186,7 @@ function StatsTab({ tid }) {
                 <td className="px-3 py-1.5 text-left text-slate-400">{r.team}</td>
                 <td className="px-3 py-1.5 font-mono-hud">{r.games}</td>
                 <td className="px-3 py-1.5 font-mono-hud">{r.winrate == null ? "-" : `${r.winrate}%`}</td>
+                {r.mmr_change != null && <td className={`px-3 py-1.5 font-mono-hud ${r.mmr_change > 0 ? "text-cyan-300" : r.mmr_change < 0 ? "text-[#FF2E55]" : "text-slate-400"}`}>{r.mmr_change > 0 ? "+" : ""}{r.mmr_change}</td>}
                 {STATS.map(([k]) => <td key={k} className="px-3 py-1.5 font-mono-hud text-slate-300">{r[k] ?? "-"}</td>)}
                 <td className="px-3 py-1.5 text-left text-xs text-slate-400">{r.champions.slice(0, 3).map(([c, n]) => `${c} ×${n}`).join(", ")}</td>
               </tr>
@@ -304,6 +306,7 @@ export default function TournamentView() {
               <span>{t.format}</span><span>{t.teams.length} teams</span>
               {t.league && <span>{LEAGUE_NAMES[t.league.type]}{t.league.best_of > 1 ? ` (Bo${t.league.best_of})` : ""}</span>}
               {t.playoffs && <span>{PLAYOFF_NAMES[t.playoffs.type]}{t.playoffs.type === "double" && t.playoffs.grand_reset ? " + reset" : ""}</span>}
+              <span title={t.counts_for_mmr ? "Each game moves MMR in the active ranked season (as a labelled adjustment); the games stay out of the ranked and unranked stats" : "Games don't change MMR"}>{t.counts_for_mmr ? "Counts for MMR" : "No MMR"}</span>
               <span className="text-cyan-300" data-testid="tv-stage">{stageText(t)}</span>
             </div>
           </div>

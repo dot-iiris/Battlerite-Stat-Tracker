@@ -4437,7 +4437,8 @@ async def bot_reset_setting(key: str, user: dict = Depends(bot_required)):
 # A tournament has teams, an optional league stage (round robin, Swiss or groups) and an optional
 # playoff bracket (single or double elimination, with or without a grand final reset). Its games are
 # kept in their own collection (tournament_games), apart from logged matches, so they never touch MMR or
-# the ranked / unranked stats - each tournament has stats of its own. They're entered on the website
+# the ranked / unranked stats - each tournament has stats of its own. A tournament can still be set to
+# count for MMR: each game's MMR changes are then saved as MMR adjustments (see _tournament_game_mmr). They're entered on the website
 # (Log Match) or with /submit in Discord.
 # Series results, standings and the bracket are worked out from those games every time (see
 # tournaments.py), so editing or deleting a game moves through the bracket by itself.
@@ -4471,6 +4472,7 @@ class TournamentPlayoffsIn(BaseModel):
 class TournamentCreate(BaseModel):
     name: str
     format: Literal["2v2", "3v3"] = "3v3"
+    counts_for_mmr: bool = False       # games also move MMR in the active ranked season (stats stay separate)
     teams: List[TournamentTeamIn]
     league: Optional[TournamentLeagueIn] = None
     playoffs: Optional[TournamentPlayoffsIn] = None
@@ -4508,7 +4510,8 @@ async def _tournament_match_check(tm_id: str, side_a: List[str], side_b: List[st
 async def _log_tournament_game(data: "MatchCreate", by: Optional[str], code: Optional[str] = None,
                                extra: Optional[dict] = None) -> dict:
     """Save a game of a tournament match. Tournament games are kept apart from logged matches: they
-    never move MMR and don't count in any ranked or unranked stats - only in their tournament's."""
+    don't count in any ranked or unranked stats - only in their tournament's (and move MMR only if the
+    tournament counts for MMR)."""
     team_a = [p for p in data.players if p.team == "A"]
     team_b = [p for p in data.players if p.team == "B"]
     size = {"1v1": 1, "2v2": 2, "3v3": 3}[data.format]
@@ -4532,8 +4535,52 @@ async def _log_tournament_game(data: "MatchCreate", by: Optional[str], code: Opt
            "logged_by": by, "logged_at": _now_iso(), **(extra or {})}
     await db.tournament_games.insert_one(doc)
     doc.pop("_id", None)
+    await _tournament_game_mmr(doc)
     _spawn(_tournament_progress(tid))
     return doc
+
+
+async def _tournament_game_mmr(game: dict):
+    """A tournament that counts for MMR: the game's MMR changes (the normal formula, no placement or carry
+    bonuses) are saved as MMR adjustments in the active ranked season, labelled with the tournament. The
+    game itself stays out of the matches, so the ranked stats don't change."""
+    t = await db.tournaments.find_one({"id": game["tournament_id"]}, {"_id": 0})
+    if not t or not t.get("counts_for_mmr"):
+        return
+    season = await get_active_ranked_season()
+    if not season:
+        await db.tournament_games.update_one({"id": game["id"]}, {"$set": {"mmr_note": "No active ranked season - no MMR change"}})
+        return
+    sid = season["id"]
+    mmr = {p["player_id"]: await get_player_mmr(p["player_id"], sid) for p in game["players"]}
+    ta = {p["player_id"]: mmr[p["player_id"]] for p in game["players"] if p["team"] == "A"}
+    tb = {p["player_id"]: mmr[p["player_id"]] for p in game["players"] if p["team"] == "B"}
+    deltas = compute_player_deltas(ta, tb, game["team_a_rounds"], game["team_b_rounds"], bonuses=False)
+    mid = (game["tournament_match_id"] or "").partition(":")[2]
+    m = next((x for x in t["matches"] if x["id"] == mid), {})
+    number = await db.tournament_games.count_documents({"tournament_match_id": game["tournament_match_id"],
+                                                        "played_at": {"$lte": game["played_at"]}})
+    reason = f"{t['name']} · {m.get('label') or ('Round %s' % m.get('round', '?'))}" + (f" · game {number}" if m.get("best_of", 1) > 1 else "")
+    changes = {}
+    for pid, d in deltas.items():
+        delta = round(d["delta"], 2)
+        changes[pid] = delta
+        await db.mmr_adjustments.insert_one({
+            "id": str(uuid.uuid4()), "player_id": pid, "season_id": sid, "delta": delta,
+            "mmr_before": round(mmr[pid], 2), "mmr_after": round(mmr[pid] + delta, 2), "reason": reason[:200],
+            "by": "Tournament", "at": game["played_at"],
+            "tournament_id": game["tournament_id"], "tournament_game_id": game["id"]})
+    await db.tournament_games.update_one({"id": game["id"]}, {"$set": {"mmr_season_id": sid, "mmr_changes": changes}})
+    game.update(mmr_season_id=sid, mmr_changes=changes)
+    await recompute_season_elo(sid)   # in case later matches were logged before this game was
+
+
+async def _drop_tournament_mmr(q: dict):
+    """Remove the MMR adjustments of deleted tournament games (q: which ones)."""
+    seasons = set(await db.mmr_adjustments.distinct("season_id", q))
+    await db.mmr_adjustments.delete_many(q)
+    for sid in seasons:
+        await recompute_season_elo(sid)
 
 
 async def _tournament_games(t: dict) -> Dict[str, list]:
@@ -4688,7 +4735,7 @@ async def create_tournament(data: TournamentCreate, user: dict = Depends(admin_r
         if not lg:
             matches = T_.build_playoffs(len(teams), po["type"], po["grand_reset"], po["best_of"],
                                         po["semis_best_of"], po["final_best_of"])
-    doc = {"id": str(uuid.uuid4())[:8], "name": name, "format": data.format,
+    doc = {"id": str(uuid.uuid4())[:8], "name": name, "format": data.format, "counts_for_mmr": data.counts_for_mmr,
            "stream_key": secrets.token_urlsafe(12), "teams": teams, "league": lg, "playoffs": po,
            "groups": groups, "matches": matches, "forfeits": {}, "playoff_seeds": None if lg else order,
            "status": "league" if lg else "playoffs", "created_at": _now_iso(),
@@ -4718,7 +4765,7 @@ async def list_tournaments(user: dict = Depends(admin_required)):
         champ = None
         if t["status"] == "finished":
             champ = (await _tournament_view(t))["champion_name"]
-        out.append({k: t.get(k) for k in ("id", "name", "format", "status", "created_at", "finished_at")}
+        out.append({k: t.get(k) for k in ("id", "name", "format", "status", "created_at", "finished_at", "counts_for_mmr")}
                    | {"teams": len(t["teams"]), "champion_name": champ,
                       "games": await db.tournament_games.count_documents({"tournament_id": t["id"]}),
                       "league": (t.get("league") or {}).get("type"), "playoffs": (t.get("playoffs") or {}).get("type")})
@@ -4746,7 +4793,7 @@ async def tournament_stats(tid: str, request: Request, key: Optional[str] = None
     names = {p["id"]: p["name"] for p in await db.players.find({"id": {"$in": list(team_of)}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)}
     tnames = {x["id"]: x["name"] for x in t["teams"]}
     rows = {pid: {"player_id": pid, "name": names.get(pid, "?"), "team": tnames.get(team_of[pid]), "games": 0, "wins": 0,
-                  "champions": {}, "stat_games": 0, "score": 0, "damage": 0, "protection": 0, "disables": 0} for pid in team_of}
+                  "champions": {}, "stat_games": 0, "mmr_change": 0.0, "score": 0, "damage": 0, "protection": 0, "disables": 0} for pid in team_of}
     games = 0
     async for m in db.tournament_games.find({"tournament_id": tid}, {"_id": 0}):
         games += 1
@@ -4756,6 +4803,7 @@ async def tournament_stats(tid: str, request: Request, key: Optional[str] = None
                 continue
             r["games"] += 1
             r["wins"] += p["team"] == m["winner_team"]
+            r["mmr_change"] += (m.get("mmr_changes") or {}).get(p["player_id"], 0)
             r["champions"][p["champion"]] = r["champions"].get(p["champion"], 0) + 1
             st = p.get("stats") or {}
             if any(st.get(k) is not None for k in STAT_FIELDS_ALL):
@@ -4769,6 +4817,7 @@ async def tournament_stats(tid: str, request: Request, key: Optional[str] = None
             r[k] = round(r[k] / n, 1) if n else None
         r["champions"] = sorted(r["champions"].items(), key=lambda x: -x[1])
         r["winrate"] = round(r["wins"] / r["games"] * 100) if r["games"] else None
+        r["mmr_change"] = round(r["mmr_change"], 1) if t.get("counts_for_mmr") else None
         players.append(r)
     players.sort(key=lambda r: (-r["games"], r["name"]))
     leaders = {k: sorted([r for r in players if r[k] is not None], key=lambda r: -r[k])[:3] for k in STAT_FIELDS_ALL}
@@ -4810,9 +4859,10 @@ async def edit_tournament(tid: str, data: TournamentEdit, user: dict = Depends(a
 
 @api_router.delete("/tournaments/{tid}")
 async def delete_tournament(tid: str, user: dict = Depends(admin_required)):
-    """The tournament goes, with its games (they aren't logged anywhere else)."""
+    """The tournament goes, with its games (they aren't logged anywhere else) and any MMR they moved."""
     await _tournament_or_404(tid)
     await db.tournament_games.delete_many({"tournament_id": tid})
+    await _drop_tournament_mmr({"tournament_id": tid})
     await db.tournaments.delete_one({"id": tid})
     return {"ok": True}
 
@@ -4823,6 +4873,7 @@ async def delete_tournament_game(tid: str, gid: str, user: dict = Depends(admin_
     res = await db.tournament_games.delete_one({"id": gid, "tournament_id": tid})
     if not res.deleted_count:
         raise HTTPException(404, "Game not found")
+    await _drop_tournament_mmr({"tournament_game_id": gid})
     await _tournament_progress(tid)
     return await _tournament_full(await _tournament_or_404(tid))
 

@@ -80,10 +80,12 @@ stage (round robin, Swiss or groups), playoffs (single or double elimination,
 with an optional grand final reset), or both, and the series length is set for
 each round. Games are entered on the website or with /submit in Discord, and
 the standings and bracket are worked out from them. Tournament games are kept
-apart from logged matches: they don't change MMR or count in the ranked or
-unranked stats, and each tournament has stats of its own. Stream overlay pages
-for OBS are opened with a private link. For now tournaments are an admin-only
-preview.
+apart from logged matches: they don't count in the ranked or unranked stats, and
+each tournament has stats of its own. A tournament can be set to count for MMR,
+in which case each game also moves the players' MMR in the active ranked season,
+without placement or carry bonuses, as a labelled MMR adjustment. Stream overlay
+pages for OBS are opened with a private link. For now tournaments are an
+admin-only preview.
 
 ## Hosting
 

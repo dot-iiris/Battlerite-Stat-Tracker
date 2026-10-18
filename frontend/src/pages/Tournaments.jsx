@@ -23,6 +23,7 @@ function CreateForm({ onDone, autoImport }) {
   const [name, setName] = useState("");
   const [format, setFormat] = useState("3v3");
   const [teams, setTeams] = useState([blankTeam(1, 3), blankTeam(2, 3)]);
+  const [mmr, setMmr] = useState(false);
   const [league, setLeague] = useState("round_robin");   // "" = none
   const [lgBo, setLgBo] = useState(1);
   const [rounds, setRounds] = useState("");
@@ -80,7 +81,7 @@ function CreateForm({ onDone, autoImport }) {
     }
     if ([...used.values()].some((n) => n > 1)) { toast.error("A player is in two teams"); return; }
     if (!league && !playoffs) { toast.error("Choose a league stage, playoffs, or both"); return; }
-    const body = { name, format, teams: out, league: null, playoffs: null };
+    const body = { name, format, counts_for_mmr: mmr, teams: out, league: null, playoffs: null };
     if (league) body.league = { type: league, best_of: lgBo, rounds: rounds ? Number(rounds) : null, groups: Number(groups), advance_per_group: Number(advance) };
     if (playoffs) body.playoffs = { type: playoffs, grand_reset: reset, best_of: bo, semis_best_of: semisBo, final_best_of: finalBo,
       teams: league && league !== "groups" && through ? Number(through) : null };
@@ -119,8 +120,14 @@ function CreateForm({ onDone, autoImport }) {
             ))}
           </div>
         </div>
-        <div className="text-xs text-slate-500 self-end">
-          Tournament games are kept with the tournament: they don't change MMR or count in the ranked or unranked stats.
+        <div>
+          <label className={lbl}>MMR</label>
+          <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer">
+            <input type="checkbox" checked={mmr} onChange={(e) => setMmr(e.target.checked)} className="mt-1" data-testid="tc-mmr" />
+            <span>Games count for MMR
+              <span className="block text-xs text-slate-500">Each game moves the players' MMR in the active ranked season (no bonuses), shown on their MMR history as a tournament adjustment. Either way, the games stay out of the ranked and unranked stats - the tournament has its own.</span>
+            </span>
+          </label>
         </div>
       </div>
 
@@ -242,6 +249,7 @@ function Section({ title, items, empty, testid }) {
                   {t.league && <span>{LEAGUE_NAMES[t.league]}</span>}
                   {t.playoffs && <span>{PLAYOFF_NAMES[t.playoffs]}</span>}
                   <span>{t.games} game{t.games === 1 ? "" : "s"}</span>
+                  {t.counts_for_mmr && <span className="text-cyan-400">Counts for MMR</span>}
                 </div>
                 <div className={`text-sm mt-1 ${t.status === "finished" ? "text-[#FFB800]" : "text-cyan-300"}`}>
                   {t.status === "finished" ? <><Trophy className="inline w-3.5 h-3.5 mr-1" />{t.champion_name || "Finished"}</> : STATUS[t.status]}
