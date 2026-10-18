@@ -3737,6 +3737,7 @@ class TournamentRequest(BaseModel):
     apart: List[List[str]] = []      # pairs that must be on different teams
     together: List[List[str]] = []   # pairs that must be on the same team
     subs: List[str] = []             # players chosen to sit out (else picked when the numbers don't divide)
+    mmr_overrides: Dict[str, float] = {}   # player id -> MMR to use here instead of theirs (tournament only)
 
 
 TOURNAMENT_MAX_PLAYERS = 60
@@ -3885,6 +3886,12 @@ async def tournament_balance(data: TournamentRequest, user: dict = Depends(admin
         if not p:
             raise HTTPException(404, f"Player {pid} not found")
         p["mmr"] = await get_player_mmr(pid, season_id) if season_id else BASE_MMR
+        p["season_mmr"] = p["mmr"]
+        if pid in data.mmr_overrides:
+            v = data.mmr_overrides[pid]
+            if not 0 <= v <= 4000:
+                raise HTTPException(400, f"{p['name']}'s MMR must be between 0 and 4000")
+            p["mmr"] = float(v)   # role adjustments still apply on top
         if BALANCE_ROLE_MODEL != "spread" and data.mode != "mmr":
             p["role_offsets"] = await role_offsets(pid)   # hidden: not sent back
         players[pid] = p
@@ -3900,11 +3907,13 @@ async def tournament_balance(data: TournamentRequest, user: dict = Depends(admin
             strength, avg, roles = _team_strength(team, data.mode)
             out.append({"strength": round(strength, 1), "avg_mmr": round(avg, 1),
                         "players": [{"id": p["id"], "name": p["name"], "mmr": round(p["mmr"]),
+                                     "season_mmr": round(p["season_mmr"]), "overridden": p["id"] in data.mmr_overrides,
                                      "role": roles.get(p["id"])} for p in sorted(team, key=lambda p: -p["mmr"])]})
         out.sort(key=lambda t: -t["strength"])   # seed 1 first
         for n, t in enumerate(out, 1):
             t["seed"] = n
-        sub_list = [{"id": i, "name": players[i]["name"], "mmr": round(players[i]["mmr"]), "chosen": i in subs}
+        sub_list = [{"id": i, "name": players[i]["name"], "mmr": round(players[i]["mmr"]), "chosen": i in subs,
+                     "overridden": i in data.mmr_overrides}
                     for i in subs + picked_subs]
         return {"teams": out, "subs": sub_list, "spread": sc[1], "rules_broken": sc[0]}
 
