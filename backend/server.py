@@ -2587,6 +2587,7 @@ class PendingMatchComplete(BaseModel):
     season_id: Optional[str] = None
     notes: Optional[str] = None
     confirmed_by: Optional[str] = None   # set by the bot when the players confirmed the result
+    needs_check: Optional[List[str]] = None   # bot: what an admin should look at (read problems)
 
 
 @api_router.post("/pending-matches")
@@ -2703,6 +2704,7 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
         "balance_mode": pm.get("balance_mode"), "reported_by": pm.get("reported_by"),
         "confirmed_by": data.confirmed_by if user.get("role") == "bot" else None,
         "completed_by": "players" if user.get("role") == "bot" else (user.get("name") or user.get("email")),
+        "needs_check": (data.needs_check or None) if user.get("role") == "bot" else None,
         "pending_match_id": pmid,
         "screenshot_id": pmid if pm.get("screenshot") else None,
     }})
@@ -2717,6 +2719,42 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
     }})
     schedule_match_log(match["id"])  # post the confirmed result to the Discord match log
     return await db.matches.find_one({"id": match["id"]}, {"_id": 0})
+
+
+class PendingNeedsAdmin(BaseModel):
+    reasons: List[str]
+    team_a_rounds: int = Field(ge=0, le=20)
+    team_b_rounds: int = Field(ge=0, le=20)
+    confirmed_by: Optional[str] = None
+
+
+@api_router.post("/pending-matches/{pmid}/needs-admin")
+async def pending_needs_admin(pmid: str, data: PendingNeedsAdmin, user: dict = Depends(bot_required)):
+    """The players confirmed the score, but the match can't be logged as read (e.g. a champion
+    wasn't read): it stays on the Pending page, with the confirmed score, for an admin to finish."""
+    if data.team_a_rounds == data.team_b_rounds:
+        raise HTTPException(400, "Rounds cannot be tied")
+    res = await db.pending_matches.update_one({"id": pmid, "status": "pending"}, {"$set": {
+        "team_a_rounds": data.team_a_rounds, "team_b_rounds": data.team_b_rounds, "score_confirmed": True,
+        "confirmed_by": data.confirmed_by, "needs_check": data.reasons[:20]}})
+    if not res.matched_count:
+        raise HTTPException(409, "This match isn't pending any more")
+    return {"ok": True}
+
+
+@api_router.get("/matches-to-check")
+async def matches_to_check(user: dict = Depends(admin_required)):
+    """Matches the players logged whose scoreboard read had something an admin should look at."""
+    return await db.matches.find({"needs_check": {"$nin": [None, []]}}, {"_id": 0}).sort("played_at", -1).to_list(200)
+
+
+@api_router.post("/matches/{mid}/checked")
+async def match_checked(mid: str, user: dict = Depends(admin_required)):
+    res = await db.matches.update_one({"id": mid}, {"$set": {
+        "needs_check": None, "checked_by": user.get("name") or user.get("email"), "checked_at": _now_iso()}})
+    if not res.matched_count:
+        raise HTTPException(404, "Match not found")
+    return {"ok": True}
 
 
 @api_router.delete("/pending-matches/{pmid}")
@@ -2873,9 +2911,25 @@ async def _parse_into_pending(pm: dict) -> dict:
     return out
 
 
+async def _read_in_background(pmid: str):
+    """The full scoreboard read after a quick upload (the pending match gets "parsed_at" when done)."""
+    try:
+        pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
+        if pm:
+            await _parse_into_pending(pm)
+    except Exception:
+        logging.getLogger(__name__).exception("Background scoreboard read failed")
+        await db.pending_matches.update_one({"id": pmid}, {"$set": {
+            "parsed_at": _now_iso(), "prefill": {"players": {}, "warnings": ["The scoreboard couldn't be read"]}}})
+    await _compress_stored(pmid)
+    _spawn(prune_screenshots())
+
+
 @api_router.post("/pending-matches/{pmid}/screenshot")
 async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), uploaded_by: Optional[str] = None,
-                                    user: dict = Depends(admin_or_bot)):
+                                    quick: bool = False, user: dict = Depends(admin_or_bot)):
+    """quick (the bot): answer with just the round score ("quick_rounds": your/enemy team) and read the
+    rest of the scoreboard in the background."""
     pm = await db.pending_matches.find_one({"id": pmid}, {"_id": 0})
     if not pm:
         raise HTTPException(404, "Pending match not found")
@@ -2902,6 +2956,18 @@ async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), upl
     }, upsert=True)
     await db.pending_matches.update_one({"id": pmid}, {"$set": {"screenshot": meta}})
     pm["screenshot"] = meta
+    if quick:
+        rounds = {}
+        try:
+            import scoreboard
+            rounds = await _run_ocr(scoreboard.read_rounds, data) or {}
+        except Exception:
+            logging.getLogger(__name__).exception("Couldn't read the round orbs")
+        await db.pending_matches.update_one({"id": pmid}, {"$set": {
+            "quick_rounds": {"your": rounds.get("blue"), "enemy": rounds.get("red")},
+            "prefill": None, "parsed_at": None}})
+        _spawn(_read_in_background(pmid))
+        return await db.pending_matches.find_one({"id": pmid}, {"_id": 0, "ocr": 0})
     out = await _parse_into_pending(pm)   # read from the original upload
     await _compress_stored(pmid)           # then keep a much smaller copy
     _spawn(prune_screenshots())
@@ -3900,8 +3966,6 @@ SETTING_SPECS = [
      "label": "2v2: confirmations", "help": "Players who must confirm a 2v2 result before it's logged."},
     {"key": "RESULT_LOSER_CONFIRMATIONS_2V2", "app": "bot", "group": "Results", "type": "int", "min": 0, "max": 2,
      "label": "2v2: from the losing team", "help": "How many of those confirmations must come from the losing team."},
-    {"key": "OCR_TRUST_STREAK", "app": "bot", "group": "Results", "type": "int", "min": 0, "max": 100,
-     "label": "Trust screenshots after", "help": "After this many screenshots in a row needed no corrections, players only confirm. 0 = always allow fixes."},
     {"key": "CLEAN_MATCH_POST", "app": "bot", "group": "Results", "type": "bool",
      "label": "Tidy match posts", "help": "Delete lobby, ping and 'Match found' posts once a match is submitted or cancelled."},
     {"key": "LINKED_ROLE_ID", "app": "bot", "group": "Roles", "type": "role",

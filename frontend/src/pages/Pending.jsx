@@ -153,9 +153,14 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
         {pm.confirmed_by && <span>Confirmed by {pm.confirmed_by}</span>}
         {pm.source_ref && <a href={pm.source_ref} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">Discord message</a>}
       </div>
-      {pm.source === "discord" && (
+      {pm.needs_check?.length > 0 ? (
+        <div className="text-xs text-amber-400 space-y-1" data-testid={`pending-needs-${pm.id}`}>
+          <div className="font-semibold">The players confirmed the score ({pm.team_a_rounds}-{pm.team_b_rounds}) but it couldn't be logged as read - finish it below:</div>
+          <ul className="list-disc pl-5">{pm.needs_check.map((r, i) => <li key={i}>{r}</li>)}</ul>
+        </div>
+      ) : pm.source === "discord" && (
         <div className="text-xs text-slate-400">
-          The players are confirming this result in Discord - it logs itself once they do. Logging or discarding it here overrides them.
+          The players are confirming the round score in Discord - it logs itself once they do, with the rest read from the screenshot. Logging or discarding it here overrides them.
         </div>
       )}
       <div className="flex flex-wrap items-start gap-4">
@@ -212,7 +217,47 @@ function PendingMatchCard({ pm, playerName, champions, seasonName, onDone }) {
   );
 }
 
+function CheckCard({ m, playerName, onDone }) {
+  const done = async () => {
+    try {
+      await api.post(`/matches/${m.id}/checked`);
+      toast.success("Marked as checked");
+      onDone();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed");
+    }
+  };
+  const team = (t) => m.players.filter((p) => p.team === t).map((p) => `${playerName(p.player_id)} (${p.champion})`).join(", ");
+  return (
+    <div className="hud-card p-4 space-y-2" data-testid={`check-${m.id}`}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono-hud uppercase tracking-wider text-slate-400">
+        <span className="text-cyan-400">#{m.discord_match_id || m.id.slice(0, 8)}</span>
+        <span>{m.format}</span>
+        <span>{new Date(m.played_at).toLocaleString()}</span>
+        {m.confirmed_by && <span>Score confirmed by {m.confirmed_by}</span>}
+      </div>
+      <div className="text-sm"><span className="text-cyan-400 font-semibold">A {m.team_a_rounds}</span> · {team("A")}</div>
+      <div className="text-sm"><span className="text-[#FF2E55] font-semibold">B {m.team_b_rounds}</span> · {team("B")}</div>
+      <ul className="space-y-1">
+        {m.needs_check.map((r, i) => (
+          <li key={i} className="flex items-start gap-1.5 text-xs text-amber-400"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />{r}</li>
+        ))}
+      </ul>
+      <div className="flex flex-wrap gap-2 pt-1">
+        <a href={`/matches?match=${m.id}`} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase border border-[#1B2438] hover:border-cyan-400 rounded">
+          Open match (edit there)
+        </a>
+        <button onClick={done} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase bg-cyan-400 text-black font-bold rounded"
+          data-testid={`check-done-${m.id}`}>
+          <CheckCircle2 className="w-3.5 h-3.5" /> Looks right
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Pending() {
+  const [toCheck, setToCheck] = useState([]);
   const [pending, setPending] = useState([]);
   const [links, setLinks] = useState([]);
   const [players, setPlayers] = useState([]);
@@ -221,11 +266,12 @@ export default function Pending() {
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [pm, lr, p, c, s] = await Promise.all([
+    const [pm, lr, p, c, s, tc] = await Promise.all([
       api.get("/pending-matches"), api.get("/link-requests"),
       api.get("/players"), api.get("/champions"), api.get("/seasons"),
+      api.get("/matches-to-check").catch(() => ({ data: [] })),
     ]);
-    setPending(pm.data); setLinks(lr.data); setPlayers(p.data); setChampions(c.data); setSeasons(s.data);
+    setPending(pm.data); setLinks(lr.data); setPlayers(p.data); setChampions(c.data); setSeasons(s.data); setToCheck(tc.data);
     setLoading(false);
   }, []);
 
@@ -249,7 +295,7 @@ export default function Pending() {
       <div>
         <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Discord Inbox</div>
         <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Pending</h1>
-        <p className="text-sm text-slate-400 mt-2">Matches reported from Discord wait here while the players confirm them in Discord (or until an admin logs them here). Screenshots are read automatically — check every value before logging. Stats come from the scoreboard's Average Total tab.</p>
+        <p className="text-sm text-slate-400 mt-2">Matches reported from Discord wait here while the players confirm the round score in Discord (or until an admin logs them here). Screenshots are read automatically — check every value before logging. Stats come from the scoreboard's Average Total tab.</p>
       </div>
 
       <section className="space-y-3">
@@ -282,6 +328,14 @@ export default function Pending() {
           <PendingMatchCard key={`${pm.id}-${pm.parsed_at || ""}`} pm={pm} playerName={playerName} champions={champions}
             seasonName={seasonName} onDone={load} />
         ))}
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="flex items-center gap-2 font-heading text-xl font-black uppercase"><AlertTriangle className="w-5 h-5 text-amber-400" /> Logged matches to check</h2>
+        <p className="text-sm text-slate-400">The players confirmed these scores and they're logged, but something on the scoreboard wasn't read cleanly. Compare with the screenshot, fix anything on the match if needed, then mark it checked.</p>
+        {toCheck.length === 0 ? (
+          <div className="text-sm text-slate-500">Nothing to check.</div>
+        ) : toCheck.map((m) => <CheckCard key={m.id} m={m} playerName={playerName} onDone={load} />)}
       </section>
 
       <OcrAccuracy key={pending.length} />
