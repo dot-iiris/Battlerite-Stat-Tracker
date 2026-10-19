@@ -1798,14 +1798,17 @@ async def recap(days: int = 7, season_id: Optional[str] = None):
 
 
 @api_router.get("/stats/champion/{name}")
-async def champion_stats(name: str, season_id: Optional[str] = None):
-    """Champion profile: winrates, which players piloted them, teammates & opponents."""
+async def champion_stats(name: str, season_id: Optional[str] = None, format: Optional[str] = None):
+    """Champion profile: winrates, which players piloted them, teammates & opponents.
+    `format` (2v2 / 3v3) narrows all of it to that format."""
     champ = await db.champions.find_one({"name": name}, {"_id": 0})
     if not champ:
         raise HTTPException(404, "Champion not found")
 
     q = {"players.champion": name}
     q.update(await season_filter(season_id))
+    if format in ("2v2", "3v3"):
+        q["format"] = format
     matches = await db.matches.find(q, {"_id": 0}).sort("played_at", -1).to_list(10000)
 
     all_players = {p["id"]: p["name"] for p in await db.players.find({}, {"_id": 0}).to_list(1000)}
