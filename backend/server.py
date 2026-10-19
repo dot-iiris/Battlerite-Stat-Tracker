@@ -10,6 +10,7 @@ import hashlib
 import math
 import threading
 import hmac
+import json
 import logging
 import time
 import uuid
@@ -20,7 +21,7 @@ from typing import Dict, List, Optional, Literal
 from itertools import combinations, permutations
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Form
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from starlette.middleware.cors import CORSMiddleware
@@ -4696,6 +4697,156 @@ async def tournament_start_playoffs(tid: str, data: PlayoffStart, user: dict = D
                                                po.get("semis_best_of"), po.get("final_best_of"))
     await db.tournaments.update_one({"id": tid}, {"$set": {"matches": matches, "playoff_seeds": seeds, "status": "playoffs"}})
     return await _tournament_full(await _tournament_or_404(tid))
+
+
+# --------- Read-only report API ---------
+# For scripts and tools that read live data without a browser session. Send REPORT_API_KEY
+# (backend .env, at least 24 characters) in the X-Report-Key header; without it an admin login works.
+# Every route here is a GET that only reads.
+REPORT_COLLECTIONS = ("matches", "players", "seasons", "tournaments", "tournament_games", "mmr_adjustments",
+                      "pending_matches", "champions", "ocr_feedback", "ocr_timings", "admin_settings",
+                      "lineups", "link_requests")
+REPORT_HIDDEN_FIELDS = {"pending_matches": ("ocr",)}     # large raw screenshot reads
+REPORT_BANNED_OPERATORS = {"$where", "$function", "$accumulator"}
+REPORT_USER = {"id": "report-api", "name": "Report API", "role": "admin"}
+
+
+def _report_key_ok(request: Request) -> bool:
+    expected = os.environ.get("REPORT_API_KEY", "").strip()
+    given = request.headers.get("X-Report-Key", "")
+    return len(expected) >= 24 and secrets.compare_digest(given.encode(), expected.encode())
+
+
+async def report_required(request: Request) -> dict:
+    if _report_key_ok(request):
+        return REPORT_USER
+    return await admin_required(request)
+
+
+def _report_filter(v, hidden=(), depth: int = 0):
+    """Checks a JSON filter and turns {"$date": "<ISO time>"} into a datetime (for fields stored as times,
+    e.g. ocr_timings.at; most times elsewhere are stored as ISO text and compare as text)."""
+    if depth > 20:
+        raise HTTPException(400, "Filter is nested too deeply")
+    if isinstance(v, dict):
+        if set(v) == {"$date"} and isinstance(v["$date"], str):
+            try:
+                d = datetime.fromisoformat(v["$date"].replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(400, f"Bad $date: {v['$date']}")
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+        out = {}
+        for k, x in v.items():
+            if not isinstance(k, str):
+                raise HTTPException(400, "Filter keys must be strings")
+            if k in REPORT_BANNED_OPERATORS:
+                raise HTTPException(400, f"{k} isn't allowed in report filters")
+            if k.split(".")[0] in hidden:
+                raise HTTPException(400, f"{k} can't be read through the report API")
+            out[k] = _report_filter(x, hidden, depth + 1)
+        return out
+    if isinstance(v, list):
+        return [_report_filter(x, hidden, depth + 1) for x in v]
+    return v
+
+
+def _report_clean(v):
+    """Makes a database document JSON-friendly (times as ISO text, binary data as its size)."""
+    if isinstance(v, dict):
+        return {str(k): _report_clean(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_report_clean(x) for x in v]
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return f"<{len(bytes(v))} bytes>"
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    return str(v)
+
+
+def _report_field_ok(name: str) -> bool:
+    return bool(name) and not name.startswith("$") and "\x00" not in name
+
+
+@api_router.get("/reports/db")
+async def report_db_overview(user: dict = Depends(report_required)):
+    """The collections the report API can read, with their document counts."""
+    return {"collections": [{"name": c, "count": await db[c].estimated_document_count(),
+                             "hidden_fields": list(REPORT_HIDDEN_FIELDS.get(c, ()))} for c in REPORT_COLLECTIONS]}
+
+
+@api_router.get("/reports/db/{collection}")
+async def report_db_find(collection: str, filter: Optional[str] = None, sort: Optional[str] = None,
+                         order: Literal["asc", "desc"] = "asc", limit: int = 100, skip: int = 0,
+                         fields: Optional[str] = None, user: dict = Depends(report_required)):
+    """Read-only find. filter is a MongoDB filter as JSON ({"$date": "..."} for stored times), fields a comma
+    separated list of fields to return, limit at most 1000."""
+    if collection not in REPORT_COLLECTIONS:
+        raise HTTPException(404, "Unknown or unavailable collection")
+    q = {}
+    if filter:
+        try:
+            q = json.loads(filter)
+        except ValueError as e:
+            raise HTTPException(400, f"filter isn't valid JSON ({e})")
+        if not isinstance(q, dict):
+            raise HTTPException(400, "filter must be a JSON object")
+    hidden = REPORT_HIDDEN_FIELDS.get(collection, ())
+    if q:
+        q = _report_filter(q, hidden)
+    if fields:
+        wanted = [f.strip() for f in fields.split(",") if f.strip()]
+        if not all(_report_field_ok(f) for f in wanted):
+            raise HTTPException(400, "Bad field name")
+        wanted = [f for f in wanted if f.split(".")[0] not in hidden and f != "_id"]
+        projection = {"_id": 0, **{f: 1 for f in wanted}} if wanted else {"_id": 0, **{h: 0 for h in hidden}}
+    else:
+        projection = {"_id": 0, **{h: 0 for h in hidden}}
+    if sort and not _report_field_ok(sort):
+        raise HTTPException(400, "Bad sort field")
+    limit = max(1, min(int(limit), 1000))
+    skip = max(0, int(skip))
+    try:
+        total = await db[collection].count_documents(q)
+        cur = db[collection].find(q, projection)
+        if sort:
+            cur = cur.sort(sort, 1 if order == "asc" else -1)
+        docs = await cur.skip(skip).limit(limit).to_list(limit)
+    except HTTPException:
+        raise
+    except Exception as e:      # bad operators etc. come back from MongoDB
+        raise HTTPException(400, f"Query failed: {e}")
+    return {"collection": collection, "total": total, "skip": skip, "limit": limit, "returned": len(docs),
+            "docs": _report_clean(docs)}
+
+
+@api_router.get("/reports/balance/explain")
+async def report_balance_explain(match: str, user: dict = Depends(report_required)):
+    return await balance_explain(match, user=user)
+
+
+@api_router.get("/reports/balance/compare")
+async def report_balance_compare(games: int = 10, user: dict = Depends(report_required)):
+    return await balance_compare(games=games, user=user)
+
+
+@api_router.get("/reports/ocr-speed")
+async def report_ocr_speed(days: int = 7, user: dict = Depends(report_required)):
+    return _report_clean(await ocr_speed(days=days, user=user))
+
+
+@api_router.get("/reports/ocr-accuracy")
+async def report_ocr_accuracy(user: dict = Depends(report_required)):
+    return _report_clean(await ocr_accuracy(user=user))
+
+
+@api_router.get("/reports/mmr-prediction", response_class=PlainTextResponse)
+async def report_mmr_prediction(user: dict = Depends(report_required)):
+    """How well MMR predicted results, as plain text (the balance report)."""
+    import balance_report
+    env = {k: os.environ.get(k) for k in ("MONGO_URL", "DB_NAME", "UNPROVEN_ROLE_PENALTY") if os.environ.get(k)}
+    return await asyncio.to_thread(balance_report.report, env)
 
 
 app.include_router(api_router)

@@ -75,6 +75,15 @@ and its 2v2 and 3v3 map pools. A setting changed there replaces the value in
 .env until it is reset. Secrets such as tokens, passwords, webhooks and the
 database address can only be set in .env.
 
+Live data can also be read, without a browser session, through a read-only
+report API under /api/reports/. Requests send the REPORT_API_KEY setting from
+.env in the X-Report-Key header, or come from a signed-in admin. It lists the
+readable database collections (/api/reports/db), runs read-only queries on
+them (/api/reports/db/<collection>?filter=<JSON>&sort=&order=&limit=&skip=&fields=),
+and returns the balance check, screenshot reading speed and accuracy, and a
+plain-text report of how well MMR predicted results (/api/reports/mmr-prediction).
+Accounts, screenshots and champion icons can't be read through it.
+
 Tournaments are run from the Tournaments page. A tournament can have a league
 stage (round robin, Swiss or groups), playoffs (single or double elimination,
 with an optional grand final reset), or both, and the series length is set for
