@@ -2041,12 +2041,16 @@ ROLE_POINT_MMR = 1600 / math.log(10) / K_FACTOR   # 1 MMR point/game better than
 ROLES = ("Melee", "Ranged", "Support")
 
 
-async def role_offsets(pid: str) -> dict:
+async def role_offsets(pid: str, before: Optional[str] = None) -> dict:
     """How much better (+) or worse (-) a player does in each role than their own usual, in MMR.
-    From the MMR changes of their ranked games in every season (role = the champion played)."""
+    From the MMR changes of their ranked games in every season (role = the champion played).
+    before: only games played before then (the Balance check page)."""
     ranked_ids = {x["id"] for x in await db.seasons.find({"ranked": {"$ne": False}}, {"_id": 0, "id": 1}).to_list(1000)}
     by_role = {r: [] for r in ROLES}
-    async for m in db.matches.find({"players.player_id": pid, "season_id": {"$in": list(ranked_ids)}},
+    q = {"players.player_id": pid, "season_id": {"$in": list(ranked_ids)}}
+    if before:
+        q["played_at"] = {"$lt": before}
+    async for m in db.matches.find(q,
                                    {"_id": 0, "players": 1}):
         for mp in m["players"]:
             if mp["player_id"] == pid and counts_for_mmr(mp) and mp.get("elo_delta") is not None:
@@ -2207,6 +2211,157 @@ async def matchmaking(data: MatchmakingRequest):
         chosen["all_splits_repeat"] = best_fresh is None
         return chosen
     return best
+
+
+# --------- Balance check (admins, read-only) ---------
+# Rebuilds what team balancing knew just before a logged match (MMR before it, role MMR from earlier
+# ranked games, most-played roles) and scores every possible split with both role models, so you can
+# see why the teams came out as they did - and how the old (role spread) and new (role MMR) balancing
+# compare on recent games.
+def _mm_score(players: Dict[str, dict], a: List[str], b: List[str], mode: str, model: str) -> dict:
+    """The matchmaking score of one split, as /matchmaking/balance works it out."""
+    mmr_a = sum(players[i]["mmr"] for i in a) / len(a)
+    mmr_b = sum(players[i]["mmr"] for i in b) / len(b)
+    mmr_score = max(0.0, 100.0 - abs(mmr_a - mmr_b) / 4.0)
+    out = {"mmr_a": round(mmr_a, 1), "mmr_b": round(mmr_b, 1), "mmr_gap": round(abs(mmr_a - mmr_b), 1),
+           "mmr_score": round(mmr_score, 2), "roles": {}}
+    if model == "spread":
+        syn = (role_synergy_score([players[i]["main_role"] for i in a]) +
+               role_synergy_score([players[i]["main_role"] for i in b])) / 2
+        out.update(role_score=round(syn, 2))
+    else:
+        str_a, ra = best_lineup([players[i] for i in a])
+        str_b, rb = best_lineup([players[i] for i in b])
+        fair = max(0.0, 100.0 - abs(str_a - str_b) / 4.0)
+        skilled = max(0.0, min(100.0, 50.0 + ((str_a - mmr_a) + (str_b - mmr_b)) / 2.0 / 2.0))
+        out.update(lineup_a=round(str_a, 1), lineup_b=round(str_b, 1), lineup_gap=round(abs(str_a - str_b), 1),
+                   fair=round(fair, 2), skilled=round(skilled, 2), role_score=round(0.5 * fair + 0.5 * skilled, 2),
+                   roles={**ra, **rb})
+    if mode == "mmr":
+        total = out["mmr_score"]
+    elif mode == "synergy":
+        total = out["role_score"]
+    else:
+        total = HYBRID_MMR_WEIGHT * out["mmr_score"] + (1 - HYBRID_MMR_WEIGHT) * out["role_score"]
+    out["total"] = round(total, 2)
+    return out
+
+
+async def _balance_explain(m: dict) -> dict:
+    """Every split of a logged match's players, scored with both role models as of just before it."""
+    pids = [p["player_id"] for p in m["players"]]
+    size = len(pids) // 2
+    names = {p["id"]: p["name"] for p in await db.players.find({"id": {"$in": pids}}, {"_id": 0, "id": 1, "name": 1}).to_list(20)}
+    before = m["played_at"]
+    players = {}
+    for p in m["players"]:
+        pid = p["player_id"]
+        mmr = p.get("mmr_before")
+        if mmr is None:
+            mmr = await get_player_mmr(pid, m["season_id"])
+        counts = {r: 0 for r in ROLES}
+        async for x in db.matches.find({"players.player_id": pid, "played_at": {"$lt": before}}, {"_id": 0, "players": 1}):
+            for mp in x["players"]:
+                if mp["player_id"] == pid:
+                    r = mp.get("role") or CHAMPION_ROLES.get(mp.get("champion"))
+                    if r in counts:
+                        counts[r] += 1
+        offs = await role_offsets(pid, before=before)
+        players[pid] = {"id": pid, "name": names.get(pid, "?"), "mmr": mmr, "role_offsets": offs,
+                        "role_games": counts, "main_role": max(counts, key=counts.get) if any(counts.values()) else "Melee",
+                        "played_role": p.get("role") or CHAMPION_ROLES.get(p.get("champion")), "team": p["team"]}
+    # teams from the players' previous games in this format (what "avoid repeats" steers away from)
+    recent, depth = set(), REPEAT_DEPTH.get(m["format"], 1)
+    for pid in pids:
+        async for x in db.matches.find({"format": m["format"], "players.player_id": pid, "played_at": {"$lt": before}},
+                                       {"_id": 0, "players.player_id": 1, "players.team": 1}).sort("played_at", -1).limit(depth):
+            for t in "AB":
+                team = frozenset(q["player_id"] for q in x["players"] if q["team"] == t)
+                if team <= set(pids) and len(team) == size:
+                    recent.add(team)
+    mode = m.get("balance_mode") if m.get("balance_mode") in ("mmr", "synergy", "hybrid") else "hybrid"
+    played_a = sorted(p["player_id"] for p in m["players"] if p["team"] == "A")
+    splits = []
+    for combo in combinations(sorted(pids), size):
+        a = list(combo)
+        b = [i for i in sorted(pids) if i not in combo]
+        if a > b:
+            continue
+        new, old = _mm_score(players, a, b, mode, "role_mmr"), _mm_score(players, a, b, mode, "spread")
+        played = a == played_a or b == played_a
+        if played and b == played_a:   # show the played split the way round it was played
+            a, b = b, a
+            new, old = _mm_score(players, a, b, mode, "role_mmr"), _mm_score(players, a, b, mode, "spread")
+        splits.append({"team_a": a, "team_b": b, "new": new, "old": old, "played": played,
+                       "repeats": frozenset(a) in recent or frozenset(b) in recent})
+    best = lambda key, fresh=False: max((s for s in splits if not (fresh and s["repeats"])), key=lambda s: s[key]["total"], default=None)
+    for key in ("new", "old"):
+        pick = best(key)
+        fresh = best(key, True)
+        for s in splits:
+            s[f"{key}_pick"] = s is pick
+            s[f"{key}_pick_fresh"] = s is fresh and fresh is not pick
+    splits.sort(key=lambda s: -s["new"]["total"])
+    for n, s in enumerate(splits, 1):
+        s["new_rank"] = n
+    for n, s in enumerate(sorted(splits, key=lambda s: -s["old"]["total"]), 1):
+        s["old_rank"] = n
+    a_won = m["team_a_rounds"] > m["team_b_rounds"]
+    played = next(s for s in splits if s["played"])
+    return {"match": {"id": m["id"], "code": m.get("discord_match_id"), "played_at": m["played_at"], "format": m["format"],
+                      "team_a_rounds": m["team_a_rounds"], "team_b_rounds": m["team_b_rounds"], "winner": "A" if a_won else "B",
+                      "mode": mode, "source": m.get("source")},
+            "settings": {"hybrid_mmr_weight": HYBRID_MMR_WEIGHT, "support_weight_2v2": SUPPORT_WEIGHT_2V2,
+                         "unproven_role_penalty": UNPROVEN_ROLE_PENALTY, "role_model_now": "spread" if BALANCE_ROLE_MODEL == "spread" else "role_mmr"},
+            "players": [{k: (round(v, 1) if isinstance(v, float) else v) for k, v in p.items() if k != "role_offsets"}
+                        | {"role_mmr": {r: round(p["mmr"] + p["role_offsets"][r], 1) for r in ROLES},
+                           "role_offsets": {r: round(v, 1) for r, v in p["role_offsets"].items()}} for p in players.values()],
+            "win_chance_a": {"mmr": round(expected_score(played["new"]["mmr_a"], played["new"]["mmr_b"]) * 100, 1),
+                             "role_mmr": round(expected_score(played["new"]["lineup_a"], played["new"]["lineup_b"]) * 100, 1)},
+            "splits": splits}
+
+
+@api_router.get("/admin/balance/explain")
+async def balance_explain(match: str, user: dict = Depends(admin_required)):
+    m = await db.matches.find_one(match_ref_query(match), {"_id": 0, "players.stats": 0})
+    if not m:
+        raise HTTPException(404, "Match not found")
+    if m.get("format") not in ("2v2", "3v3"):
+        raise HTTPException(400, "Only 2v2 and 3v3 matches")
+    return await _balance_explain(m)
+
+
+@api_router.get("/admin/balance/compare")
+async def balance_compare(games: int = 10, user: dict = Depends(admin_required)):
+    """Old vs new role balancing on the last ranked games of each format."""
+    games = max(1, min(int(games), 30))
+    ranked = [x["id"] for x in await db.seasons.find({"ranked": {"$ne": False}}, {"_id": 0, "id": 1}).to_list(1000)]
+    out = {}
+    for fmt in ("3v3", "2v2"):
+        rows = []
+        async for m in db.matches.find({"format": fmt, "season_id": {"$in": ranked}}, {"_id": 0, "players.stats": 0}) \
+                .sort("played_at", -1).limit(games):
+            e = await _balance_explain(m)
+            played = next(s for s in e["splits"] if s["played"])
+            new = next(s for s in e["splits"] if s["new_pick"])
+            old = next(s for s in e["splits"] if s["old_pick"])
+            a_won = e["match"]["winner"] == "A"
+            rows.append({"match": e["match"], "names": {p["id"]: p["name"] for p in e["players"]},
+                         "played": played, "new_pick": new, "old_pick": old,
+                         "played_is_new": played is new, "played_is_old": played is old, "same_pick": new is old,
+                         "win_chance_a": e["win_chance_a"], "a_won": a_won})
+        n = len(rows)
+        brier = lambda k: round(sum((r["win_chance_a"][k] / 100 - (1 if r["a_won"] else 0)) ** 2 for r in rows) / n, 3) if n else None
+        fav = lambda k: sum((r["win_chance_a"][k] > 50) == r["a_won"] for r in rows if r["win_chance_a"][k] != 50)
+        out[fmt] = {"games": rows, "summary": {
+            "games": n, "played_new": sum(r["played_is_new"] for r in rows), "played_old": sum(r["played_is_old"] for r in rows),
+            "same_pick": sum(r["same_pick"] for r in rows),
+            "avg_gap_new": round(sum(r["new_pick"]["new"]["mmr_gap"] for r in rows) / n, 1) if n else None,
+            "avg_gap_old": round(sum(r["old_pick"]["old"]["mmr_gap"] for r in rows) / n, 1) if n else None,
+            "favourite_won_mmr": fav("mmr"), "favourite_won_role": fav("role_mmr"),
+            "brier_mmr": brier("mmr"), "brier_role": brier("role_mmr"),
+            "avg_margin": round(sum(abs(r["match"]["team_a_rounds"] - r["match"]["team_b_rounds"]) for r in rows) / n, 1) if n else None}}
+    return out
 
 
 # --------- Tournament team balancer (admins) ---------
