@@ -11,6 +11,7 @@ import math
 import threading
 import hmac
 import logging
+import time
 import uuid
 import jwt
 import bcrypt
@@ -319,6 +320,7 @@ async def startup():
     await db.screenshots.create_index("id", unique=True)
     await db.champion_icons.create_index("champion")
     await db.ocr_feedback.create_index("created_at")
+    await db.ocr_timings.create_index("at", expireAfterSeconds=30 * 24 * 3600)   # OCR speed log: 30 days
     await db.screenshots.create_index("sha256")
     await db.admin_settings.create_index("key", unique=True)
     try:   # an earlier version put this index on the wrong collection
@@ -2463,8 +2465,65 @@ _ocr_pool = ThreadPoolExecutor(max_workers=1, initializer=_lowest_priority)   # 
 _icon_refs = None
 
 
-async def _run_ocr(fn, *args):
-    return await asyncio.get_running_loop().run_in_executor(_ocr_pool, fn, *args)
+async def _run_ocr(fn, *args, timing: Optional[dict] = None):
+    """Run a screenshot read on the OCR thread. With `timing` ({"kind", "source", "data"}) the read is
+    timed and logged in ocr_timings (kept 30 days) for the OCR speed panel on the Pending page."""
+    if timing is None:
+        return await asyncio.get_running_loop().run_in_executor(_ocr_pool, fn, *args)
+    queued = time.perf_counter()
+    started = []
+
+    def timed():
+        started.append(time.perf_counter())
+        return fn(*args)
+
+    ok = False
+    try:
+        out = await asyncio.get_running_loop().run_in_executor(_ocr_pool, timed)
+        ok = True
+        return out
+    finally:
+        done = time.perf_counter()
+        start = started[0] if started else done
+        w, h = _image_size(timing.get("data") or b"")
+        try:
+            await db.ocr_timings.insert_one({
+                "at": datetime.now(timezone.utc), "kind": timing.get("kind"), "source": timing.get("source"),
+                "wait_ms": round((start - queued) * 1000), "run_ms": round((done - start) * 1000),
+                "width": w, "height": h, "ok": ok, "threads": int(os.environ.get("OCR_THREADS") or 1)})
+        except Exception:
+            logging.getLogger(__name__).warning("Couldn't log the OCR timing", exc_info=True)
+
+
+def _image_size(data: bytes) -> tuple:
+    """(width, height) from a PNG / JPEG / WebP header, without decoding the image. (None, None) if unknown."""
+    import struct
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return struct.unpack(">II", data[16:24])
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            chunk = data[12:16]
+            if chunk == b"VP8 ":
+                return struct.unpack("<HH", data[26:30])[0] & 0x3FFF, struct.unpack("<HH", data[26:30])[1] & 0x3FFF
+            if chunk == b"VP8L":
+                b = int.from_bytes(data[21:25], "little")
+                return (b & 0x3FFF) + 1, ((b >> 14) & 0x3FFF) + 1
+            if chunk == b"VP8X":
+                return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1
+        if data[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                    h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                    return w, h
+                i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+    except Exception:
+        pass
+    return None, None
 
 
 async def _get_icon_refs():
@@ -2768,10 +2827,12 @@ async def read_screenshot(file: UploadFile = File(...), team_a: str = Form(""), 
         if detect:
             everyone = [{"id": p["id"], "names": [p.get("name"), p.get("ign")]}
                         for p in await db.players.find({}, {"_id": 0, "id": 1, "name": 1, "ign": 1}).to_list(5000)]
-            res = await _run_ocr(_detect_screenshot, data, everyone, await _get_icon_refs())
+            res = await _run_ocr(_detect_screenshot, data, everyone, await _get_icon_refs(),
+                                 timing={"kind": "full", "source": "website", "data": data})
         else:
             roster_a, roster_b = await _roster({"team_a": a_ids, "team_b": b_ids})
-            res = await _run_ocr(_read_screenshot, data, roster_a, roster_b, await _get_icon_refs())
+            res = await _run_ocr(_read_screenshot, data, roster_a, roster_b, await _get_icon_refs(),
+                                 timing={"kind": "full", "source": "website", "data": data})
     except ImportError:
         raise HTTPException(503, "Screenshot reading isn't installed on the server")
     pre, parsed = res["prefill"], res["parsed"] or {}
@@ -3401,6 +3462,39 @@ def _resolution_label(h: Optional[int]) -> str:
         if h < limit:
             return label
     return "4K+"
+
+
+@api_router.get("/admin/ocr-speed")
+async def ocr_speed(days: int = 7, user: dict = Depends(admin_required)):
+    """How long screenshot reads take on this server: typical / slow times by kind and resolution, the
+    wait for the OCR thread (reads run one at a time), and the slowest recent reads."""
+    days = max(1, min(int(days), 30))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    docs = await db.ocr_timings.find({"at": {"$gte": since}}, {"_id": 0}).sort("at", -1).to_list(20000)
+
+    def pct(xs, p):
+        xs = sorted(xs)
+        return xs[min(len(xs) - 1, int(round(p / 100 * (len(xs) - 1))))] if xs else None
+
+    groups = {}
+    for d in docs:
+        groups.setdefault((d.get("kind"), _resolution_label(d.get("height"))), []).append(d)
+    order = {"rounds": 0, "full": 1}
+    rows = []
+    for (kind, res), ds in sorted(groups.items(), key=lambda g: (order.get(g[0][0], 9), g[0][1])):
+        run = [d["run_ms"] for d in ds]
+        wait = [d["wait_ms"] for d in ds]
+        rows.append({"kind": kind, "resolution": res, "reads": len(ds), "failed": sum(not d.get("ok") for d in ds),
+                     "median_ms": pct(run, 50), "p90_ms": pct(run, 90), "max_ms": max(run),
+                     "median_wait_ms": pct(wait, 50), "max_wait_ms": max(wait)})
+    waits = [d["wait_ms"] for d in docs]
+    slowest = sorted(docs, key=lambda d: -(d["run_ms"] + d["wait_ms"]))[:8]
+    for d in slowest:
+        d["at"] = d["at"].isoformat() if hasattr(d["at"], "isoformat") else d["at"]
+        d["resolution"] = _resolution_label(d.get("height"))
+    return {"days": days, "reads": len(docs), "rows": rows,
+            "waited": sum(w >= 250 for w in waits), "median_wait_ms": pct(waits, 50), "max_wait_ms": max(waits) if waits else None,
+            "threads": int(os.environ.get("OCR_THREADS") or 1), "slowest": slowest}
 
 
 @api_router.get("/admin/ocr-accuracy")

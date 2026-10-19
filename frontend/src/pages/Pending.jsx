@@ -3,6 +3,7 @@ import api from "@/api";
 import { toast } from "sonner";
 import { CheckCircle2, Link2, XCircle } from "lucide-react";
 import OcrAccuracy from "@/components/OcrAccuracy";
+import OcrSpeed from "@/components/OcrSpeed";
 
 export default function Pending() {
   const [links, setLinks] = useState([]);
@@ -53,6 +54,7 @@ export default function Pending() {
       </section>
 
       <OcrAccuracy />
+      <OcrSpeed />
     </div>
   );
 }
