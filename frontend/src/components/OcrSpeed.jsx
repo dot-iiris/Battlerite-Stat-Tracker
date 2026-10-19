@@ -43,11 +43,11 @@ export default function OcrSpeed() {
       ) : (
         <div className="hud-card p-5 space-y-5">
           <div className="text-xs text-slate-400">
-            {data.reads} read{data.reads === 1 ? "" : "s"}. Screenshots are read one at a time
-            ({data.threads} OCR thread{data.threads === 1 ? "" : "s"} each);{" "}
+            {data.reads} read{data.reads === 1 ? "" : "s"}. Whole scoreboards are read one at a time
+            ({data.threads} OCR thread{data.threads === 1 ? "" : "s"} each); round scores have their own lane and don't wait for them.{" "}
             {data.waited > 0
-              ? <><span className="font-mono-hud text-amber-400">{data.waited}</span> waited a noticeable time for another read to finish (longest {secs(data.max_wait_ms)}).</>
-              : <>none had to wait noticeably for another read.</>}
+              ? <><span className="font-mono-hud text-amber-400">{data.waited}</span> read{data.waited === 1 ? "" : "s"} waited a noticeable time for another to finish (longest {secs(data.max_wait_ms)}).</>
+              : <>No read had to wait noticeably for another.</>}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[560px] text-sm text-slate-100">

@@ -3177,14 +3177,19 @@ def _lowest_priority():
 
 
 _ocr_pool = ThreadPoolExecutor(max_workers=1, initializer=_lowest_priority)   # one at a time, off the event loop
+# the round-score read (well under a second) has its own lane, so players get the confirm card straight
+# away even while another lobby's whole scoreboard is being read
+_ocr_fast_pool = ThreadPoolExecutor(max_workers=1, initializer=_lowest_priority)
 _icon_refs = None
 
 
-async def _run_ocr(fn, *args, timing: Optional[dict] = None):
+async def _run_ocr(fn, *args, timing: Optional[dict] = None, fast: bool = False):
     """Run a screenshot read on the OCR thread. With `timing` ({"kind", "source", "data"}) the read is
-    timed and logged in ocr_timings (kept 30 days) for the OCR speed panel on the Pending page."""
+    timed and logged in ocr_timings (kept 30 days) for the OCR speed panel on the Pending page.
+    fast: run on the round-score lane instead of the main queue."""
+    pool = _ocr_fast_pool if fast else _ocr_pool
     if timing is None:
-        return await asyncio.get_running_loop().run_in_executor(_ocr_pool, fn, *args)
+        return await asyncio.get_running_loop().run_in_executor(pool, fn, *args)
     queued = time.perf_counter()
     started = []
 
@@ -3194,7 +3199,7 @@ async def _run_ocr(fn, *args, timing: Optional[dict] = None):
 
     ok = False
     try:
-        out = await asyncio.get_running_loop().run_in_executor(_ocr_pool, timed)
+        out = await asyncio.get_running_loop().run_in_executor(pool, timed)
         ok = True
         return out
     finally:
@@ -3413,7 +3418,7 @@ async def upload_pending_screenshot(pmid: str, file: UploadFile = File(...), upl
         rounds = {}
         try:
             import scoreboard
-            rounds = await _run_ocr(scoreboard.read_rounds, data,
+            rounds = await _run_ocr(scoreboard.read_rounds, data, fast=True,
                                     timing={"kind": "rounds", "source": "discord", "data": data}) or {}
         except Exception:
             logging.getLogger(__name__).exception("Couldn't read the round orbs")
