@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, ImageUp, Inbox, Link2, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { invalidateChampionStats } from "@/lib/championStats";
 import OcrAccuracy from "@/components/OcrAccuracy";
+import OcrSpeed from "@/components/OcrSpeed";
 
 const STAT_FIELDS = ["score", "damage", "protection", "disables"];
 const inputCls = "bg-[#121828] border border-[#1B2438] focus:border-cyan-400 focus:outline-none rounded px-2 py-1.5 text-sm";
@@ -339,6 +340,7 @@ export default function Pending() {
       </section>
 
       <OcrAccuracy key={pending.length} />
+      <OcrSpeed />
     </div>
   );
 }
