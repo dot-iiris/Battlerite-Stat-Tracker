@@ -19,6 +19,7 @@ const Matchmaking = lazy(PAGE_LOADERS["/matchmaking"]);
 const Recap = lazy(PAGE_LOADERS["/recap"]);
 const Seasons = lazy(PAGE_LOADERS["/seasons"]);
 const Settings = lazy(PAGE_LOADERS["/settings"]);
+const BalanceCheck = lazy(PAGE_LOADERS["/balance-check"]);
 const Tournament = lazy(PAGE_LOADERS["/tournament"]);
 const Tournaments = lazy(PAGE_LOADERS["/tournaments"]);
 const TournamentView = lazy(PAGE_LOADERS["/tournaments/:id"]);
@@ -69,6 +70,7 @@ function App() {
           <Route path="/recap" element={<Protected><Recap /></Protected>} />
           <Route path="/seasons" element={<Protected><Seasons /></Protected>} />
           <Route path="/settings" element={<Protected adminOnly><Settings /></Protected>} />
+          <Route path="/balance-check" element={<Protected adminOnly><BalanceCheck /></Protected>} />
           <Route path="/tournament" element={<Protected adminOnly><Tournament /></Protected>} />
           <Route path="/tournaments" element={<Protected adminOnly><Tournaments /></Protected>} />
           <Route path="/tournaments/:id" element={<Protected adminOnly><TournamentView /></Protected>} />
