@@ -1,7 +1,7 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { prefetchPage } from "@/api";
 import { useAuth } from "@/AuthContext";
-import { EyeOff, ShieldCheck, Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle, Settings2, Shuffle, Award, Scale } from "lucide-react";
+import { EyeOff, ShieldCheck, Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle, Settings2, Shuffle, Award } from "lucide-react";
 
 const links = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
@@ -17,7 +17,6 @@ const links = [
   { to: "/seasons", label: "Seasons", icon: Calendar, testid: "nav-seasons" },
   { to: "/tournaments", label: "Tournaments", icon: Award, testid: "nav-tournaments", adminOnly: true },   // admin preview for now
   { to: "/tournament", label: "Make Teams", icon: Shuffle, testid: "nav-tournament", adminOnly: true },
-  { to: "/balance-check", label: "Balance Check", icon: Scale, testid: "nav-balance-check", adminOnly: true },
   { to: "/settings", label: "Settings", icon: Settings2, testid: "nav-settings", adminOnly: true },
 ];
 

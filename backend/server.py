@@ -3949,8 +3949,8 @@ async def _balance_explain(m: dict) -> dict:
             "splits": splits}
 
 
-@api_router.get("/admin/balance/explain")
-async def balance_explain(match: str, user: dict = Depends(admin_required)):
+async def balance_explain(match: str, user: Optional[dict] = None):
+    """Why a match got its teams (GET /api/reports/balance/explain)."""
     m = await db.matches.find_one(match_ref_query(match), {"_id": 0, "players.stats": 0})
     if not m:
         raise HTTPException(404, "Match not found")
@@ -3959,9 +3959,8 @@ async def balance_explain(match: str, user: dict = Depends(admin_required)):
     return await _balance_explain(m)
 
 
-@api_router.get("/admin/balance/compare")
-async def balance_compare(games: int = 10, user: dict = Depends(admin_required)):
-    """Old vs new role balancing on the last ranked games of each format."""
+async def balance_compare(games: int = 10, user: Optional[dict] = None):
+    """Old vs new role balancing on the last ranked games of each format (GET /api/reports/balance/compare)."""
     games = max(1, min(int(games), 30))
     ranked = [x["id"] for x in await db.seasons.find({"ranked": {"$ne": False}}, {"_id": 0, "id": 1}).to_list(1000)]
     out = {}

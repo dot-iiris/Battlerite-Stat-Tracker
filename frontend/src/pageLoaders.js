@@ -18,7 +18,6 @@ export const PAGE_LOADERS = {
   "/recap": () => import("@/pages/Recap"),
   "/seasons": () => import("@/pages/Seasons"),
   "/settings": () => import("@/pages/Settings"),
-  "/balance-check": () => import("@/pages/BalanceCheck"),
   "/tournament": () => import("@/pages/Tournament"),
   "/tournaments": () => import("@/pages/Tournaments"),
   "/tournaments/:id": () => import("@/pages/TournamentView"),
