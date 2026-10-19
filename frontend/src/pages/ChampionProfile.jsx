@@ -5,7 +5,7 @@ import { Flame, Users, Swords, Shield, ArrowLeft } from "lucide-react";
 import MatchList from "@/components/MatchList";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
-import FormatFilter, { byFormat } from "@/components/FormatFilter";
+import FormatFilter from "@/components/FormatFilter";
 
 const roleAccent = (r) =>
   r === "Melee" ? { text: "text-[#FF4655]", bg: "bg-[#FF4655]/10", border: "border-[#FF4655]/40" } :
@@ -30,10 +30,11 @@ export default function ChampionProfile() {
     setStats(null);
     const params = {};
     if (seasonId) params.season_id = seasonId;
+    if (format !== "all") params.format = format;   // the whole page follows the format buttons
     api.get(`/stats/champion/${encodeURIComponent(name)}`, { params })
       .then((r) => setStats(r.data))
       .catch(() => setStats({ error: true }));
-  }, [name, seasonId]);
+  }, [name, seasonId, format]);
 
   if (!stats) return <div className="text-slate-400 font-mono-hud">Loading dossier...</div>;
   if (stats.error) return (
@@ -44,7 +45,7 @@ export default function ChampionProfile() {
   );
 
   const accent = roleAccent(stats.role);
-  const allMatches = (stats.matches || stats.recent_matches || []).filter(byFormat(format));
+  const allMatches = stats.matches || stats.recent_matches || [];
   const playerName = (id) => players.find((p) => p.id === id)?.name || "—";
   const wrClass = stats.total_picks === 0 ? "text-slate-500" : (stats.winrate >= 50 ? "text-[#00E676]" : "text-[#FF2E55]");
 
@@ -65,8 +66,11 @@ export default function ChampionProfile() {
             </div>
           </div>
         </div>
-        <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
-          className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="champion-profile-season" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <FormatFilter value={format} onChange={setFormat} testid="champion-format" />
+          <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
+            className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="champion-profile-season" />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -180,7 +184,6 @@ export default function ChampionProfile() {
             <Flame className="w-4 h-4 text-[#FFB800]" /> Matches
             <span className="text-xs font-mono-hud text-slate-500 normal-case">{allMatches.length}</span>
           </h3>
-          <FormatFilter value={format} onChange={setFormat} small testid="champion-matches-format" />
         </div>
         <MatchList key={`${name}-${seasonId}-${format}`} matches={allMatches} playerName={playerName} seasons={seasons}
           focusChampion={stats.champion} testid="champion-match" />
