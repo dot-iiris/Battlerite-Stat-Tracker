@@ -1480,7 +1480,10 @@ async def mmr_trajectory(pid: str, season: Optional[dict]) -> list:
 
 
 @api_router.get("/stats/player/{pid}")
-async def player_stats(pid: str, season_id: Optional[str] = None):
+async def player_stats(pid: str, season_id: Optional[str] = None, format: Optional[str] = None):
+    """A player's page. `format` (2v2 / 3v3) narrows the stats - matches, win rate, champions, roles,
+    teammates, opponents, streak - but MMR and peak always cover every format (there's one MMR)."""
+    fmt = format if format in ("2v2", "3v3") else None
     player = await db.players.find_one({"id": pid}, {"_id": 0})
     if not player:
         raise HTTPException(404, "Player not found")
@@ -1521,7 +1524,8 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
     teammates = {}
     opponents = {}
     total_wins = 0
-    total_matches = len(matches)
+    in_format = lambda m: not fmt or m.get("format") == fmt
+    total_matches = sum(1 for m in matches if in_format(m))
     mmr = BASE_MMR
     peak = BASE_MMR
     mmr_history = []
@@ -1548,6 +1552,11 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
         apply_adjustments(m["played_at"])
         my = next((p for p in m["players"] if p["player_id"] == pid), None)
         if not my:
+            continue
+        if not in_format(m):   # other format: counts for MMR only
+            if counts_for_mmr(my):
+                mmr += my.get("elo_delta", 0)
+            peak = max(peak, mmr)
             continue
         won = (my["team"] == "A" and m["team_a_rounds"] > m["team_b_rounds"]) or \
               (my["team"] == "B" and m["team_b_rounds"] > m["team_a_rounds"])
@@ -1603,7 +1612,7 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
 
     # Compute current streak from most recent matches backwards
     outcomes = []  # newest first
-    for m in matches:  # matches sorted DESC by played_at
+    for m in filter(in_format, matches):  # matches sorted DESC by played_at
         my = next((p for p in m["players"] if p["player_id"] == pid), None)
         if not my:
             continue
@@ -1643,7 +1652,8 @@ async def player_stats(pid: str, season_id: Optional[str] = None):
         # always one ranked season - "All" would run several seasons' MMR together
         "mmr_history": await mmr_trajectory(pid, traj),
         "mmr_history_season_name": traj["name"] if traj else None,
-        "recent_matches": matches[:10],
+        "recent_matches": [m for m in matches if in_format(m)][:10],
+        "format": fmt or "all",
     }
 
 

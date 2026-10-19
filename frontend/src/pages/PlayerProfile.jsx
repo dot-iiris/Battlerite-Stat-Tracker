@@ -58,11 +58,12 @@ export default function PlayerProfile() {
   useEffect(() => {
     const params = {};
     if (seasonId) params.season_id = seasonId;
+    if (format !== "all") params.format = format;
     api.get(`/stats/player/${id}`, { params }).then((r) => setStats(r.data));
     setAllMates(false);
     setAllFoes(false);
     loadMatches();
-  }, [id, seasonId, loadMatches]);
+  }, [id, seasonId, format, loadMatches]);
 
   if (!stats) return <div className="text-slate-400 font-mono-hud">Loading dossier...</div>;
 
@@ -81,9 +82,17 @@ export default function PlayerProfile() {
           <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Player Dossier</div>
           <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight flex items-center gap-3">{stats.player.name}<StreakBadge streak={stats.streak} size="lg" /></h1>
         </div>
-        <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
-          className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="profile-season" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <FormatFilter value={format} onChange={setFormat} testid="profile-format" />
+          <SeasonSelect seasons={seasons} value={seasonId} onChange={setSeasonId}
+            className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="profile-season" />
+        </div>
       </div>
+      {format !== "all" && (
+        <div className="text-xs text-slate-500 -mt-3" data-testid="profile-format-note">
+          Showing {format} only. MMR, peak rank and the MMR trajectory cover both formats - there's one MMR.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="hud-card hud-corner p-5">
@@ -239,7 +248,6 @@ export default function PlayerProfile() {
             <History className="w-4 h-4 text-cyan-400" /> Match History
             <span className="text-xs font-mono-hud text-slate-500 normal-case">{listed.length}</span>
           </h3>
-          <FormatFilter value={format} onChange={setFormat} small testid="profile-matches-format" />
         </div>
         <MatchList key={`${id}-${seasonId}-${format}`} matches={listed} playerName={playerName} seasons={seasons}
           onChanged={loadMatches} focusPlayer={id} testid="profile-match" />
