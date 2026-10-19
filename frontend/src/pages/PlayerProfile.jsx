@@ -88,11 +88,7 @@ export default function PlayerProfile() {
             className="bg-[#121828] border border-[#1B2438] rounded px-3 py-2 text-sm" data-testid="profile-season" />
         </div>
       </div>
-      {format !== "all" && (
-        <div className="text-xs text-slate-500 -mt-3" data-testid="profile-format-note">
-          Showing {format} only. MMR, peak rank and the MMR trajectory cover both formats - there's one MMR.
-        </div>
-      )}
+
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="hud-card hud-corner p-5">
