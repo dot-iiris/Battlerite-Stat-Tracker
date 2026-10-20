@@ -1903,7 +1903,14 @@ class MatchmakingRequest(BaseModel):
     # avoid the teams from each player's recent games in this format (REPEAT_DEPTH games back)
     avoid_repeats: bool = False
 
-REPEAT_DEPTH = {"2v2": 1, "3v3": 2}   # how many of each player's recent games to avoid repeating
+def _int_env(name, default, lo, hi):
+    try:
+        return int(min(hi, max(lo, float(os.environ.get(name) or default))))
+    except ValueError:
+        return default
+# how many of each player's recent games to avoid repeating (0 = off); admins can change these on the
+# Settings page (REPEAT_DEPTH_2V2 / REPEAT_DEPTH_3V3)
+REPEAT_DEPTH = {"2v2": _int_env("REPEAT_DEPTH_2V2", 1, 0, 10), "3v3": _int_env("REPEAT_DEPTH_3V3", 2, 0, 10)}
 
 
 def _when(v) -> datetime:
@@ -3626,6 +3633,10 @@ SETTING_SPECS = [
      "label": "Unproven role penalty (MMR)", "help": "A role a player has rarely or never played counts this much below their MMR until their games in it show otherwise. 0 = off."},
     {"key": "SUPPORT_WEIGHT_2V2", "app": "website", "group": "Team balancing", "type": "float", "min": 0, "max": 1,
      "label": "2v2: support share", "help": "How much the Support counts in a 2v2 team's role line-up (0-1)."},
+    {"key": "REPEAT_DEPTH_2V2", "app": "website", "group": "Team balancing", "type": "int", "min": 0, "max": 10,
+     "label": "2v2: avoid repeat teams (games)", "help": "Teams from each player's last this many 2v2 games aren't made again while another split exists. 0 = off."},
+    {"key": "REPEAT_DEPTH_3V3", "app": "website", "group": "Team balancing", "type": "int", "min": 0, "max": 10,
+     "label": "3v3: avoid repeat teams (games)", "help": "Teams from each player's last this many 3v3 games aren't made again while another split exists. 0 = off."},
     {"key": "LOBBY_TIMEOUT_MINUTES", "app": "bot", "group": "Lobbies", "type": "float", "min": 0, "max": 1440,
      "label": "Lobby timeout (minutes)", "help": "A lobby nobody joins or leaves for this long closes. 0 = never."},
     {"key": "STICKY_SETTINGS_MINUTES", "app": "bot", "group": "Lobbies", "type": "float", "min": 0, "max": 1440,
@@ -3669,6 +3680,8 @@ WEBSITE_DEFAULTS = {   # what the .env files gave at startup
     "HYBRID_MMR_WEIGHT": HYBRID_MMR_WEIGHT,
     "SUPPORT_WEIGHT_2V2": SUPPORT_WEIGHT_2V2,
     "UNPROVEN_ROLE_PENALTY": int(UNPROVEN_ROLE_PENALTY),
+    "REPEAT_DEPTH_2V2": REPEAT_DEPTH["2v2"],
+    "REPEAT_DEPTH_3V3": REPEAT_DEPTH["3v3"],
 }
 _SNOWFLAKE = re.compile(r"\d{15,21}")
 
@@ -3768,6 +3781,10 @@ def _apply_website_setting(key: str, value):
         SUPPORT_WEIGHT_2V2 = float(v)
     elif key == "UNPROVEN_ROLE_PENALTY":
         UNPROVEN_ROLE_PENALTY = float(v)
+    elif key == "REPEAT_DEPTH_2V2":
+        REPEAT_DEPTH["2v2"] = int(v)
+    elif key == "REPEAT_DEPTH_3V3":
+        REPEAT_DEPTH["3v3"] = int(v)
 
 
 async def load_setting_overrides():
