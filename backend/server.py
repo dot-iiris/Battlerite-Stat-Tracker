@@ -4430,7 +4430,8 @@ BOT_SETTINGS = True   # bot-integration: the Discord bot's settings are kept her
 MAP_NAMES = [   # every arena in the game; map pools are picked from these
     "Mount Araz (Day)", "Mount Araz (Night)", "Blackstone Arena (Day)", "Blackstone Arena (Night)",
     "Dragon Garden (Day)", "Dragon Garden (Night)", "Daharin Battlegrounds (Day)",
-    "Daharin Battlegrounds (Night)", "The Great Market (Night)", "Meriko Summit (Day)", "Meriko Summit (Night)",
+    "Daharin Battlegrounds (Night)", "The Great Market (Day)", "The Great Market (Night)", "Meriko Summit (Day)",
+    "Meriko Summit (Night)",
     "Orman Temple (Day)", "Orman Temple (Night)", "Misty Woods (Day)", "Misty Woods (Night)",
     "Sky Ring (Day)", "Sky Ring (Night)",
 ]
