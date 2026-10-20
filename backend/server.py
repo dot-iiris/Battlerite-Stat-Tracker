@@ -3611,11 +3611,12 @@ async def match_stats(mid: str):
 # Secrets (tokens, keys, passwords, webhooks, the database address) are deliberately not here -
 # they only ever live in the .env files.
 BOT_SETTINGS = False   # bot-integration: the Discord bot's settings are kept here too
-MAP_NAMES = [
+MAP_NAMES = [   # every arena in the game; map pools are picked from these
     "Mount Araz (Day)", "Mount Araz (Night)", "Blackstone Arena (Day)", "Blackstone Arena (Night)",
     "Dragon Garden (Day)", "Dragon Garden (Night)", "Daharin Battlegrounds (Day)",
-    "Daharin Battlegrounds (Night)", "The Great Market (Night)", "Meriko Summit (Night)",
-    "Orman Temple (Night)",
+    "Daharin Battlegrounds (Night)", "The Great Market (Night)", "Meriko Summit (Day)", "Meriko Summit (Night)",
+    "Orman Temple (Day)", "Orman Temple (Night)", "Misty Woods (Day)", "Misty Woods (Night)",
+    "Sky Ring (Day)", "Sky Ring (Night)",
 ]
 SETTING_GROUPS = ["Website", "Team balancing", "Lobbies", "Lobby pings", "Results", "Roles", "Map pools"]
 SETTING_SPECS = [
@@ -3748,16 +3749,14 @@ def parse_setting(spec: dict, raw):
             name = " ".join(str(i).split())
             if not name:
                 continue
-            if len(name) > 60:
-                raise ValueError("Map names are at most 60 characters")
-            known = next((m for m in MAP_NAMES if m.lower() == name.lower()), name)
-            if known.lower() not in (o.lower() for o in out):
+            known = next((m for m in MAP_NAMES if m.lower() == name.lower()), None)
+            if known is None:
+                raise ValueError(f"'{name[:60]}' isn't a Battlerite map")
+            if known not in out:
                 out.append(known)
         if not out:
             raise ValueError("Keep at least one map")
-        if len(out) > 40:
-            raise ValueError("At most 40 maps")
-        return out
+        return sorted(out, key=MAP_NAMES.index)
     raise ValueError("Unknown setting type")
 
 

@@ -76,30 +76,28 @@ function IdListControl({ row, options, prefix, onSave }) {
   );
 }
 
-// "Mount Araz (Night)" -> ["Mount Araz", "Night"]; a name without a (Day)/(Night) part has no variant
+// "Mount Araz (Night)" -> ["Mount Araz", "Night"]
 function splitMap(m) {
   const hit = /^(.*?)\s*\((Day|Night)\)$/i.exec(m);
-  return hit ? [hit[1], hit[2][0].toUpperCase() + hit[2].slice(1).toLowerCase()] : [m, null];
+  return hit ? [hit[1], hit[2][0].toUpperCase() + hit[2].slice(1).toLowerCase()] : [m, m];
 }
 
 function MapsControl({ row, mapNames, onSave }) {
-  // one row per map, with a button for each of its Day / Night versions - lit = in the pool
+  // one row per arena, with a button for each of its Day / Night versions - lit = in the pool
   const value = row.value || [];
-  const have = new Set(value.map((m) => m.toLowerCase()));
-  const all = [...mapNames, ...value.filter((m) => !mapNames.some((n) => n.toLowerCase() === m.toLowerCase()))];
+  const have = new Set(value);
   const groups = [];
-  for (const m of all) {
+  for (const m of mapNames) {
     const [base, variant] = splitMap(m);
-    let g = groups.find((x) => x.base.toLowerCase() === base.toLowerCase());
+    let g = groups.find((x) => x.base === base);
     if (!g) groups.push((g = { base, items: [] }));
     g.items.push({ name: m, variant });
   }
-  const order = (m) => { const i = all.findIndex((x) => x.toLowerCase() === m.toLowerCase()); return i < 0 ? all.length : i; };
   const toggle = (m) => {
-    if (have.has(m.toLowerCase())) {
-      if (value.length > 1) onSave(value.filter((x) => x.toLowerCase() !== m.toLowerCase()));
+    if (have.has(m)) {
+      if (value.length > 1) onSave(value.filter((x) => x !== m));
     } else {
-      onSave([...value, m].sort((a, b) => order(a) - order(b)));
+      onSave(mapNames.filter((x) => have.has(x) || x === m));
     }
   };
   const btn = (on, last) => `text-xs font-mono-hud uppercase tracking-wider px-2.5 py-1 rounded border transition-colors ${on
@@ -110,15 +108,15 @@ function MapsControl({ row, mapNames, onSave }) {
       {groups.map((g) => (
         <div key={g.base} className="flex items-center justify-between gap-3 rounded border border-[#1B2438] bg-[#0C101B] px-3 py-2"
           data-testid={`map-group-${row.key}-${g.base}`}>
-          <span className={`text-sm truncate ${g.items.some((i) => have.has(i.name.toLowerCase())) ? "text-slate-200" : "text-slate-500"}`}>{g.base}</span>
+          <span className={`text-sm truncate ${g.items.some((i) => have.has(i.name)) ? "text-slate-200" : "text-slate-500"}`}>{g.base}</span>
           <div className="flex gap-1.5 flex-shrink-0">
             {g.items.map(({ name, variant }) => {
-              const on = have.has(name.toLowerCase());
+              const on = have.has(name);
               const last = on && value.length === 1;
               return (
                 <button key={name} type="button" onClick={() => toggle(name)} aria-pressed={on} className={btn(on, last)}
                   title={last ? "Keep at least one map" : `${on ? "Remove" : "Add"} ${name}`} data-testid={`map-toggle-${row.key}-${name}`}>
-                  {variant || "On"}
+                  {variant}
                 </button>
               );
             })}
