@@ -178,6 +178,9 @@ class SeasonUpdate(BaseModel):
     name: Optional[str] = None
     end_date: Optional[str] = None
 
+class SeasonMapPool(BaseModel):
+    maps: Optional[List[str]] = None   # None or empty = use the general pool (Settings)
+
 class PlayerCreate(BaseModel):
     name: str
 
@@ -865,7 +868,9 @@ async def reserve_match_code(data: ReserveCode, user: dict = Depends(admin_or_bo
     season = await get_active_ranked_season() if data.ranked else await ensure_unranked_season()
     if not season:
         raise HTTPException(400, "There is no active ranked season")
-    return {"code": await make_code(season, data.format), "season_id": season["id"]}
+    return {"code": await make_code(season, data.format), "season_id": season["id"],
+            # the season's own map pool for this format; None = the bot uses the general pool
+            "map_pool": (season.get("map_pools") or {}).get(data.format) or None}
 
 async def check_and_close_expired_seasons():
     """Auto-close active seasons whose end_date has passed. Spawn next season."""
@@ -945,6 +950,25 @@ async def update_season(sid: str, data: SeasonUpdate, user: dict = Depends(admin
     doc = await db.seasons.find_one({"id": sid}, {"_id": 0})
     schedule_leaderboard_push()   # the post shows the season name
     return doc
+
+@api_router.put("/seasons/{sid}/map-pool/{fmt}")
+async def set_season_map_pool(sid: str, fmt: Literal["2v2", "3v3"], data: SeasonMapPool,
+                              user: dict = Depends(admin_required)):
+    """A ranked season's own map pool for one format (no maps = back to the general pool)."""
+    target = await db.seasons.find_one({"id": sid}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Season not found")
+    if not is_ranked_season(target):
+        raise HTTPException(400, "The Unranked season uses the general map pools")
+    if data.maps:
+        try:
+            pool = parse_setting(SETTING_BY_KEY[f"MAP_POOL_{fmt.upper()}"], data.maps)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        await db.seasons.update_one({"id": sid}, {"$set": {f"map_pools.{fmt}": pool}})
+    else:
+        await db.seasons.update_one({"id": sid}, {"$unset": {f"map_pools.{fmt}": ""}})
+    return await db.seasons.find_one({"id": sid}, {"_id": 0})
 
 @api_router.post("/seasons/{sid}/activate")
 async def activate_season(sid: str, user: dict = Depends(admin_required)):

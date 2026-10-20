@@ -1,9 +1,60 @@
 import { useEffect, useState } from "react";
 import api from "@/api";
 import { toast } from "sonner";
-import { Calendar, Plus, CheckCircle, Trash2, Pencil } from "lucide-react";
+import { Calendar, Plus, CheckCircle, Trash2, Pencil, Map as MapIcon } from "lucide-react";
 import SeasonCountdown from "@/components/SeasonCountdown";
 import { useAuth } from "@/AuthContext";
+import MapPoolPicker from "@/components/MapPoolPicker";
+
+// A ranked season's own 2v2 / 3v3 map pools (admins). Without one, matches use the general pool
+// from the Settings page.
+function SeasonMapPools({ season, general, mapNames, onSaved }) {
+  const save = async (fmt, maps) => {
+    try {
+      const { data } = await api.put(`/seasons/${season.id}/map-pool/${fmt}`, { maps });
+      onSaved(data);
+      toast.success(maps ? `${season.name}: ${fmt} pool saved (${maps.length} map${maps.length === 1 ? "" : "s"})` : `${season.name}: ${fmt} uses the general pool`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't save");
+    }
+  };
+  return (
+    <div className="mt-4 pt-4 border-t border-[#1B2438] space-y-4" data-testid={`season-maps-${season.id}`}>
+      {["2v2", "3v3"].map((fmt) => {
+        const own = season.map_pools?.[fmt];
+        const fallback = general[fmt] || [];
+        return (
+          <div key={fmt} className="space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80">
+                {fmt} maps{" "}
+                <span className="normal-case tracking-normal text-slate-500">
+                  {own ? `- this season's own pool (${own.length})` : `- general pool (${fallback.length})`}
+                </span>
+              </div>
+              {own ? (
+                <button onClick={() => save(fmt, null)} className="text-xs text-slate-400 hover:text-cyan-400" data-testid={`season-maps-general-${season.id}-${fmt}`}>
+                  Use the general pool
+                </button>
+              ) : (
+                <button onClick={() => save(fmt, fallback.length ? fallback : mapNames)} className="text-xs text-cyan-400 hover:text-cyan-300"
+                  data-testid={`season-maps-own-${season.id}-${fmt}`}>
+                  Give this season its own pool
+                </button>
+              )}
+            </div>
+            {own ? (
+              <MapPoolPicker value={own} mapNames={mapNames} onChange={(maps) => save(fmt, maps)} testid={`${season.id}-${fmt}`}
+                className="grid gap-2 grid-cols-1 sm:grid-cols-2" />
+            ) : (
+              <div className="text-xs text-slate-500">{fallback.join(", ") || "Shown once the bot connects"}</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ISO date -> value for a datetime-local input, in the viewer's own timezone
 function toLocalInput(iso) {
@@ -19,6 +70,16 @@ export default function Seasons() {
   const [editEnd, setEditEnd] = useState("");
   const [editName, setEditName] = useState("");
   const { isAdmin } = useAuth();
+  const [mapsOpen, setMapsOpen] = useState(null);
+  const [mapInfo, setMapInfo] = useState(null);   // { names, general: { "2v2": [...], "3v3": [...] } }
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    api.get("/admin/settings").then(({ data }) => {
+      const pool = (k) => data.settings.find((r) => r.key === k)?.value || [];
+      setMapInfo({ names: data.map_names || [], general: { "2v2": pool("MAP_POOL_2V2"), "3v3": pool("MAP_POOL_3V3") } });
+    }).catch(() => {});
+  }, [isAdmin]);
 
   const load = async () => {
     const s = await api.get("/seasons");
@@ -102,13 +163,17 @@ export default function Seasons() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {seasons.map((s) => (
-          <div key={s.id} className={`hud-card p-4 flex items-center justify-between border-2 ${s.active ? "border-cyan-400/50" : "border-[#1B2438]"}`} data-testid={`season-card-${s.id}`}>
+          <div key={s.id} className={`hud-card p-4 border-2 ${s.active ? "border-cyan-400/50" : "border-[#1B2438]"} ${mapsOpen === s.id ? "md:col-span-2" : ""}`} data-testid={`season-card-${s.id}`}>
+          <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-heading text-lg font-bold uppercase">{s.name}</span>
                 {s.active && <span className="text-[10px] font-mono-hud uppercase tracking-wider px-2 py-0.5 bg-cyan-400/10 border border-cyan-400 text-cyan-400 rounded">ACTIVE</span>}
                 {s.ranked === false && <span className="text-[10px] font-mono-hud uppercase tracking-wider px-2 py-0.5 border border-slate-600 text-slate-400 rounded">No MMR</span>}
                 {s.end_date && <SeasonCountdown endDate={s.end_date} seasonName={s.name} compact />}
+                {isAdmin && (s.map_pools?.["2v2"] || s.map_pools?.["3v3"]) && (
+                  <span className="text-[10px] font-mono-hud uppercase tracking-wider px-2 py-0.5 border border-[#FFB800]/50 text-[#FFB800] rounded">Own maps</span>
+                )}
               </div>
               <div className="text-xs font-mono-hud text-slate-500 mt-1">Created {new Date(s.created_at).toLocaleDateString()}{s.end_date ? ` · Ends ${new Date(s.end_date).toLocaleDateString()}` : ""}</div>
               {editingId === s.id && (
@@ -123,6 +188,12 @@ export default function Seasons() {
               )}
             </div>
             <div className="flex items-center gap-2">
+              {isAdmin && s.ranked !== false && mapInfo && (
+                <button onClick={() => setMapsOpen(mapsOpen === s.id ? null : s.id)} title="Map pools for this season"
+                  className={`p-1.5 ${mapsOpen === s.id ? "text-cyan-400" : "text-slate-500 hover:text-cyan-400"}`} data-testid={`season-maps-btn-${s.id}`}>
+                  <MapIcon className="w-4 h-4" />
+                </button>
+              )}
               {isAdmin && s.ranked !== false && (
                 <button onClick={() => startEdit(s)} title="Rename / change end date" className="text-slate-500 hover:text-cyan-400 p-1.5" data-testid={`season-edit-${s.id}`}>
                   <Pencil className="w-4 h-4" />
@@ -139,6 +210,11 @@ export default function Seasons() {
                 </button>
               )}
             </div>
+          </div>
+          {isAdmin && mapsOpen === s.id && mapInfo && (
+            <SeasonMapPools season={s} general={mapInfo.general} mapNames={mapInfo.names}
+              onSaved={(doc) => setSeasons((all) => all.map((x) => (x.id === doc.id ? doc : x)))} />
+          )}
           </div>
         ))}
       </div>
