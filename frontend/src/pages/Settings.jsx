@@ -76,37 +76,55 @@ function IdListControl({ row, options, prefix, onSave }) {
   );
 }
 
+// "Mount Araz (Night)" -> ["Mount Araz", "Night"]; a name without a (Day)/(Night) part has no variant
+function splitMap(m) {
+  const hit = /^(.*?)\s*\((Day|Night)\)$/i.exec(m);
+  return hit ? [hit[1], hit[2][0].toUpperCase() + hit[2].slice(1).toLowerCase()] : [m, null];
+}
+
 function MapsControl({ row, mapNames, onSave }) {
-  const [typed, setTyped] = useState("");
+  // one row per map, with a button for each of its Day / Night versions - lit = in the pool
   const value = row.value || [];
-  const have = value.map((m) => m.toLowerCase());
-  const left = mapNames.filter((m) => !have.includes(m.toLowerCase()));
-  const add = (m) => { if (m.trim() && !have.includes(m.trim().toLowerCase())) onSave([...value, m.trim()]); };
+  const have = new Set(value.map((m) => m.toLowerCase()));
+  const all = [...mapNames, ...value.filter((m) => !mapNames.some((n) => n.toLowerCase() === m.toLowerCase()))];
+  const groups = [];
+  for (const m of all) {
+    const [base, variant] = splitMap(m);
+    let g = groups.find((x) => x.base.toLowerCase() === base.toLowerCase());
+    if (!g) groups.push((g = { base, items: [] }));
+    g.items.push({ name: m, variant });
+  }
+  const order = (m) => { const i = all.findIndex((x) => x.toLowerCase() === m.toLowerCase()); return i < 0 ? all.length : i; };
+  const toggle = (m) => {
+    if (have.has(m.toLowerCase())) {
+      if (value.length > 1) onSave(value.filter((x) => x.toLowerCase() !== m.toLowerCase()));
+    } else {
+      onSave([...value, m].sort((a, b) => order(a) - order(b)));
+    }
+  };
+  const btn = (on, last) => `text-xs font-mono-hud uppercase tracking-wider px-2.5 py-1 rounded border transition-colors ${on
+    ? "border-cyan-400 bg-cyan-400/15 text-cyan-300 hover:bg-cyan-400/25"
+    : "border-[#1B2438] text-slate-500 hover:border-slate-500 hover:text-slate-300"} ${last ? "cursor-not-allowed" : ""}`;
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-1.5">
-        {value.map((m) => (
-          <span key={m} className={chip} data-testid={`map-${row.key}-${m}`}>
-            {m}
-            <button type="button" disabled={value.length === 1} title={value.length === 1 ? "Keep at least one map" : "Remove"}
-              onClick={() => onSave(value.filter((x) => x !== m))} className="text-slate-500 hover:text-[#FF2E55] disabled:opacity-30"
-              data-testid={`map-remove-${row.key}-${m}`}><X className="w-3 h-3" /></button>
-          </span>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {left.length > 0 && (
-          <select value="" onChange={(e) => add(e.target.value)} className={`${input} py-1.5`} data-testid={`map-add-${row.key}`}>
-            <option value="">+ Add a map…</option>
-            {left.map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
-        )}
-        <form className="flex gap-1.5" onSubmit={(e) => { e.preventDefault(); add(typed); setTyped(""); }}>
-          <input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Other map name" maxLength={60}
-            className={`${input} w-48 py-1.5`} data-testid={`map-type-${row.key}`} />
-          <button type="submit" className="text-cyan-400" aria-label="Add"><Plus className="w-4 h-4" /></button>
-        </form>
-      </div>
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+      {groups.map((g) => (
+        <div key={g.base} className="flex items-center justify-between gap-3 rounded border border-[#1B2438] bg-[#0C101B] px-3 py-2"
+          data-testid={`map-group-${row.key}-${g.base}`}>
+          <span className={`text-sm truncate ${g.items.some((i) => have.has(i.name.toLowerCase())) ? "text-slate-200" : "text-slate-500"}`}>{g.base}</span>
+          <div className="flex gap-1.5 flex-shrink-0">
+            {g.items.map(({ name, variant }) => {
+              const on = have.has(name.toLowerCase());
+              const last = on && value.length === 1;
+              return (
+                <button key={name} type="button" onClick={() => toggle(name)} aria-pressed={on} className={btn(on, last)}
+                  title={last ? "Keep at least one map" : `${on ? "Remove" : "Add"} ${name}`} data-testid={`map-toggle-${row.key}-${name}`}>
+                  {variant || "On"}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
