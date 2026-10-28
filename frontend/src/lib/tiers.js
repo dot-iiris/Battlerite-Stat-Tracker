@@ -9,13 +9,11 @@ export const TIERS = [
     desc: "Advanced players — well above the pack." },
   { name: "Platinum",    min: 1300, max: 1449, color: "text-slate-200", border: "border-slate-300", bg: "bg-slate-300/10",
     desc: "Sharp fundamentals, climbing fast." },
-  { name: "Gold",        min: 1150, max: 1299.999, color: "text-yellow-400",border: "border-yellow-400",bg: "bg-yellow-400/10",
-    desc: "Solid competitive baseline." },
+  { name: "Gold",        min: 1150, max: 1299, color: "text-yellow-400",border: "border-yellow-400",bg: "bg-yellow-400/10",
+    desc: "Solid competitive baseline. Everyone starts here at 1200 MMR." },
   { name: "Silver",      min: 0,    max: 1149, color: "text-slate-400", border: "border-slate-400", bg: "bg-slate-400/10",
-    desc: "Entry tier. Everyone starts here at 1200 MMR." },
+    desc: "New players." },
 ];
 
-export const tierFor = (mmr) => {
-  const t = TIERS.find((x) => mmr >= x.min && (x.max === null || mmr <= x.max));
-  return t || TIERS[TIERS.length - 1];
-};
+export const tierFor = (mmr) =>
+  TIERS.find((x) => mmr >= x.min) || TIERS[TIERS.length - 1];
