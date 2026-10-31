@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import api, { API } from "@/api";
 import { toast } from "sonner";
-import { ArrowLeft, ChevronDown, Copy, Eye, EyeOff, Flag, Image as ImageIcon, Pencil, PlayCircle, PlusCircle, Trash2, Trophy, Tv, Check, X, SkipForward } from "lucide-react";
+import { ArrowLeft, Copy, Eye, EyeOff, Flag, Image as ImageIcon, Pencil, PlayCircle, PlusCircle, Trash2, Trophy, Tv, Check, X, SkipForward } from "lucide-react";
 import { useAuth } from "@/AuthContext";
-import MatchDetails from "@/components/MatchDetails";
+import MatchList from "@/components/MatchList";
 import { Bracket, Standings, StatusChip, matchNames, rotationMembers, stageText, LEAGUE_NAMES, PLAYOFF_NAMES } from "@/components/TournamentParts";
 
 const TABS = [
@@ -17,19 +17,17 @@ const TABS = [
 const btn = "flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase tracking-wider border rounded transition-colors";
 const errText = (err, fallback) => err?.response?.data?.detail || fallback;
 
-// A tournament game shaped like a logged match, for MatchDetails (sides A/B as it was entered)
-const gameAsMatch = (g) => ({
-  id: g.game_id, format: g.format, played_at: g.played_at, map: g.map, source: g.source, source_ref: g.source_ref,
-  team_a_rounds: g.team_a_rounds, team_b_rounds: g.team_b_rounds, winner_team: g.winner_team,
+// A tournament game shaped like a logged match, for MatchList / MatchDetails (sides A/B as it was entered)
+const gameAsMatch = (g, n) => ({
+  id: g.game_id, n, game: g, format: g.format, played_at: g.played_at, map: g.map, source: g.source,
+  source_ref: g.source_ref, team_a_rounds: g.team_a_rounds, team_b_rounds: g.team_b_rounds, winner_team: g.winner_team,
   players: g.players.map((p) => ({ ...p, team: p.side })),
 });
 
 function MatchRow({ t, m, names, isAdmin, act, highlight, members, playerName }) {
   const open = ["ready", "live"].includes(m.status);
-  const [openGame, setOpenGame] = useState(null);   // game id shown in full under the row
-  const teamName = (id) => (id === m.team1 ? m.team1_name : id === m.team2 ? m.team2_name : null);
-  const shown = m.game_list?.find((g) => g.game_id === openGame);
   const score = m.status === "bye" ? "" : m.status === "forfeit" ? (m.winner === m.team1 ? "W - FF" : "FF - W") : m.best_of > 1 ? `${m.wins1} - ${m.wins2}` : m.games ? `${m.rounds1} - ${m.rounds2}` : "vs";
+  const teamName = (id) => (id === m.team1 ? m.team1_name : id === m.team2 ? m.team2_name : null);
   const side = (n) => {
     const won = m.done && m.winner && m.winner === m[`team${n}`];
     const cls = won ? "text-cyan-300 font-semibold" : m.done ? "text-slate-500" : "";
@@ -39,8 +37,9 @@ function MatchRow({ t, m, names, isAdmin, act, highlight, members, playerName })
     }
     return <span className={`truncate ${cls}`}>{m[`team${n}_name`] || "TBD"}</span>;
   };
+  const games = (m.game_list || []).map((g, i) => gameAsMatch(g, i + 1));
   return (
-    <div id={`tm-${m.id}`} className={`rounded border px-3 py-2 space-y-1.5 ${highlight ? "border-cyan-400" : "border-[#1B2438]"}`} data-testid={`tmatch-${m.id}`}>
+    <div id={`tm-${m.id}`} className={`bg-[#121828]/40 rounded border p-3 space-y-2 ${highlight ? "border-cyan-400" : "border-[#1B2438]"}`} data-testid={`tmatch-${m.id}`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 w-40 truncate">{names[m.id]}{m.best_of > 1 ? ` · Bo${m.best_of}` : ""}</span>
         {m.status === "bye" ? (
@@ -70,40 +69,29 @@ function MatchRow({ t, m, names, isAdmin, act, highlight, members, playerName })
           </button>
         )}
       </div>
-      {m.game_list?.length > 0 && (
-        <div className="flex flex-wrap gap-2 pl-0 sm:pl-[10.75rem]">
-          {m.game_list.map((g, i) => {
-            const wName = g.winner === m.team1 ? m.team1_name : m.team2_name;
-            return (
-              <span key={g.game_id} data-testid={`tgame-${g.game_id}`}
-                className={`inline-flex items-center gap-1.5 text-[11px] font-mono-hud px-2 py-0.5 rounded border ${openGame === g.game_id ? "border-cyan-400/60 text-cyan-300" : "border-[#1B2438] text-slate-400"}`}>
-                <button type="button" onClick={() => setOpenGame(openGame === g.game_id ? null : g.game_id)} data-testid={`tgame-open-${g.game_id}`}
-                  title={`${[m.team1, m.team2].map((tm) => g.players.filter((p) => p.team === tm).map((p) => p.champion).join(", ")).join("  vs  ")} - click for the scoreboard`}
-                  className="inline-flex items-center gap-1 hover:text-cyan-300">
-                  G{i + 1}: {wName} {g.rounds[m.team1]}-{g.rounds[m.team2]}
-                  <ChevronDown className={`w-3 h-3 transition-transform ${openGame === g.game_id ? "rotate-180" : ""}`} />
-                </button>
-                {g.screenshot_id && (
-                  <a href={`${API}/screenshots/${g.screenshot_id}`} target="_blank" rel="noreferrer" title="Open the scoreboard screenshot"
-                    className="text-slate-500 hover:text-cyan-400" aria-label="Screenshot" data-testid={`tgame-shot-${g.game_id}`}><ImageIcon className="w-3 h-3" /></a>
-                )}
-                {isAdmin && (
-                  <button onClick={() => window.confirm(`Delete game ${i + 1} of this series?`) && act(`/tournaments/${t.id}/games/${g.game_id}`, null, "Game deleted", "delete")}
-                    className="text-slate-600 hover:text-[#FF2E55]" aria-label="Delete game" data-testid={`tgame-del-${g.game_id}`}><X className="w-3 h-3" /></button>
-                )}
-              </span>
-            );
+      {games.length > 0 && (
+        // each game like a match on the Champions / player pages: both line-ups, opens to the full scoreboard
+        <MatchList matches={games} playerName={playerName} limit={games.length} showAllButton={false} testid={`tgame-${m.id}`}
+          detailsProps={(gm) => ({
+            editable: false,
+            statsPath: `/tournaments/${t.id}/games/${gm.id}/stats`,
+            screenshotUrl: gm.game.screenshot_id ? `${API}/screenshots/${gm.game.screenshot_id}` : null,
+            teamNames: { A: teamName(gm.game.sides?.A), B: teamName(gm.game.sides?.B) },
+            showMmr: !!t.counts_for_mmr && gm.players.some((p) => p.elo_delta != null),
           })}
-        </div>
-      )}
-      {shown && (
-        <div className="px-1 pb-1" data-testid={`tgame-details-${shown.game_id}`}>
-          <MatchDetails match={gameAsMatch(shown)} playerName={playerName} editable={false}
-            statsPath={`/tournaments/${t.id}/games/${shown.game_id}/stats`}
-            screenshotUrl={shown.screenshot_id ? `${API}/screenshots/${shown.screenshot_id}` : null}
-            teamNames={{ A: teamName(shown.sides?.A), B: teamName(shown.sides?.B) }}
-            showMmr={!!t.counts_for_mmr && shown.players.some((p) => p.elo_delta != null)} />
-        </div>
+          rowExtra={(gm) => (
+            <span className="flex items-center gap-2">
+              {games.length > 1 && <span className="uppercase tracking-wider text-slate-400">Game {gm.n}</span>}
+              {gm.game.screenshot_id && (
+                <a href={`${API}/screenshots/${gm.game.screenshot_id}`} target="_blank" rel="noreferrer" title="Open the scoreboard screenshot"
+                  className="text-slate-500 hover:text-cyan-400" aria-label="Screenshot" data-testid={`tgame-shot-${gm.id}`}><ImageIcon className="w-3.5 h-3.5" /></a>
+              )}
+              {isAdmin && (
+                <button type="button" onClick={() => window.confirm(`Delete game ${gm.n} of this series?`) && act(`/tournaments/${t.id}/games/${gm.id}`, null, "Game deleted", "delete")}
+                  className="text-slate-600 hover:text-[#FF2E55]" aria-label="Delete game" data-testid={`tgame-del-${gm.id}`}><Trash2 className="w-3.5 h-3.5" /></button>
+              )}
+            </span>
+          )} />
       )}
     </div>
   );
