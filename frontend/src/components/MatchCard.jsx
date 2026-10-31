@@ -3,6 +3,7 @@ import { ChevronDown } from "lucide-react";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import MmrChange from "@/components/MmrChange";
 import MatchDetails from "@/components/MatchDetails";
+import { teamPlayers } from "@/lib/roleOrder";
 
 // One match as a big card (Match History, tournament games): both teams with champions, the round
 // score, and the full scoreboard when opened.
@@ -18,7 +19,7 @@ export default function MatchCard({ match: m, playerName, open, onToggle, tags, 
     <div className="min-w-0">
       {teamNames?.[team] && <div className={`text-[10px] font-mono-hud uppercase tracking-wider mb-1 truncate ${won ? "text-[#00E676]" : "text-slate-500"}`}>{teamNames[team]}</div>}
       <div className={`p-3 rounded border ${won ? "border-[#00E676]/40 bg-[#00E676]/5" : "border-[#1B2438] bg-[#121828]/40"}`}>
-        {m.players.filter((p) => p.team === team).map((p) => (
+        {teamPlayers(m.players, team).map((p) => (
           <div key={`${p.team}-${p.player_id}-${p.champion}`} className="flex items-center justify-between gap-2 py-1">
             <div className="flex items-center gap-2 min-w-0">
               <ChampionPortrait name={p.champion} role={p.role} size={26} />

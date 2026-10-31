@@ -5,6 +5,7 @@ import ChampionPortrait from "@/components/ChampionPortrait";
 import MatchDetails from "@/components/MatchDetails";
 import MmrChange from "@/components/MmrChange";
 import { MatchCode } from "@/components/FormatFilter";
+import { teamPlayers } from "@/lib/roleOrder";
 
 // Compact match rows (both teams with champion + player name) that open the full match in place.
 // Used on player pages, champion pages and the dashboard; the Matches page has its own big cards.
@@ -42,7 +43,7 @@ export default function MatchList({
 
         const team = (t) => (
           <span className={`flex flex-col gap-1 min-w-0 ${t === m.winner_team ? "" : "opacity-60"}`}>
-            {m.players.filter((p) => p.team === t).map((p) => (
+            {teamPlayers(m.players, t).map((p) => (
               <span key={p.player_id} className="flex items-center gap-1.5 min-w-0">
                 <span className={`inline-flex leading-[0] rounded flex-shrink-0 ${marked(p) ? `ring-2 ${ring} ring-offset-1 ring-offset-[#121828]` : ""}`}>
                   <ChampionPortrait name={p.champion} role={p.role} size={22} linkToProfile={false} />

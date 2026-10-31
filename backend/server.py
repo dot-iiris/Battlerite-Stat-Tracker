@@ -3117,6 +3117,9 @@ async def _mmr_after_match(m: dict) -> dict:
     return {}
 
 
+ROLE_ORDER = {"Melee": 0, "Ranged": 1, "Support": 2}   # players are listed Melee, Ranged, Support
+
+
 async def match_log_payload(m: dict) -> dict:
     ids = [p["player_id"] for p in m["players"]]
     names = {p["id"]: p["name"] for p in await db.players.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(20)}
@@ -3128,7 +3131,7 @@ async def match_log_payload(m: dict) -> dict:
 
     def lines(team):
         out = []
-        for p in [x for x in m["players"] if x["team"] == team]:
+        for p in sorted((x for x in m["players"] if x["team"] == team), key=lambda x: ROLE_ORDER.get(x.get("role"), 3)):
             row = f"**{names.get(p['player_id'], '?')}** · {p['champion']}"
             if ranked:
                 d = p.get("elo_delta") or 0

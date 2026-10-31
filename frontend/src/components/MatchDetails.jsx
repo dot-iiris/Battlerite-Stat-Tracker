@@ -7,6 +7,7 @@ import { useAuth } from "@/AuthContext";
 import EditMatchDialog from "@/components/EditMatchDialog";
 import MmrChange from "@/components/MmrChange";
 import ChampionPortrait from "@/components/ChampionPortrait";
+import { teamPlayers } from "@/lib/roleOrder";
 
 const STATS = [
   { key: "score", label: "Score" },
@@ -91,7 +92,7 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged,
   const hasStats = (stats?.players || []).some((p) => p.raw);
   const shotUrl = screenshotUrl !== undefined ? screenshotUrl : shotId ? `${API}/matches/${match.id}/screenshot?v=${shotId}` : null;
 
-  const teamRows = (team) => match.players.filter((p) => p.team === team).map((p) => {
+  const teamRows = (team) => teamPlayers(match.players, team).map((p) => {
     const s = byPlayer[p.player_id] || {};
     const raw = s.raw || {};
     const d = s.derived || {};
@@ -126,7 +127,7 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged,
         <div className={`font-heading font-black uppercase tracking-wide text-sm mb-1 ${team === "A" ? "text-cyan-400" : "text-[#FF2E55]"}`}>
           {teamLabel(team)} {won && <span className="text-[10px] font-mono-hud text-[#00E676] ml-1">WIN</span>}
         </div>
-        {match.players.filter((p) => p.team === team).map((p) => (
+        {teamPlayers(match.players, team).map((p) => (
           <div key={`${team}-${p.player_id}`} className={`flex items-center gap-2 py-1.5 px-1 border-t border-[#1B2438] ${hl(p) ? T.row : ""}`}>
             {portrait(p)}
             <div className="min-w-0 flex-1">
