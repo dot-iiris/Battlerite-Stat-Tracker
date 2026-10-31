@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import api from "@/api";
+import api, { API } from "@/api";
 import { toast } from "sonner";
-import { ArrowLeft, Copy, Flag, Pencil, PlayCircle, PlusCircle, Trash2, Trophy, Tv, Check, X, SkipForward } from "lucide-react";
+import { ArrowLeft, Copy, Flag, Image as ImageIcon, Pencil, PlayCircle, PlusCircle, Trash2, Trophy, Tv, Check, X, SkipForward } from "lucide-react";
 import { useAuth } from "@/AuthContext";
 import { Bracket, Standings, StatusChip, matchNames, rotationMembers, stageText, LEAGUE_NAMES, PLAYOFF_NAMES } from "@/components/TournamentParts";
 
@@ -68,6 +68,10 @@ function MatchRow({ t, m, names, isAdmin, act, highlight, members }) {
                 title={[m.team1, m.team2].map((tm) => g.players.filter((p) => p.team === tm).map((p) => p.champion).join(", ")).join("  vs  ")}
                 className="inline-flex items-center gap-1.5 text-[11px] font-mono-hud px-2 py-0.5 rounded border border-[#1B2438] text-slate-400">
                 G{i + 1}: {wName} {g.rounds[m.team1]}-{g.rounds[m.team2]}
+                {g.screenshot_id && (
+                  <a href={`${API}/screenshots/${g.screenshot_id}`} target="_blank" rel="noreferrer" title="Open the scoreboard screenshot"
+                    className="text-slate-500 hover:text-cyan-400" aria-label="Screenshot" data-testid={`tgame-shot-${g.game_id}`}><ImageIcon className="w-3 h-3" /></a>
+                )}
                 {isAdmin && (
                   <button onClick={() => window.confirm(`Delete game ${i + 1} of this series?`) && act(`/tournaments/${t.id}/games/${g.game_id}`, null, "Game deleted", "delete")}
                     className="text-slate-600 hover:text-[#FF2E55]" aria-label="Delete game" data-testid={`tgame-del-${g.game_id}`}><X className="w-3 h-3" /></button>

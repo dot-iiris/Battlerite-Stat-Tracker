@@ -3109,7 +3109,8 @@ async def complete_pending_match(pmid: str, data: PendingMatchComplete, user: di
             "players" if is_bot else (user.get("name") or user.get("email")), code=pm.get("discord_match_id"),
             extra={"source": pm.get("source"), "map": pm.get("map"), "reported_by": pm.get("reported_by"),
                    "confirmed_by": data.confirmed_by if is_bot else None, "pending_match_id": pmid,
-                   "needs_check": (data.needs_check or None) if is_bot else None})
+                   "needs_check": (data.needs_check or None) if is_bot else None,
+                   "screenshot_id": pmid if pm.get("screenshot") else None})
         if pm.get("screenshot") and pm.get("prefill"):
             await _learn_icons(pm, {p.player_id: p.champion for p in data.players})
         await db.pending_matches.update_one({"id": pmid}, {"$set": {
@@ -3518,6 +3519,7 @@ async def screenshot_storage() -> dict:
 async def _drop_screenshot(sid: str, why: str):
     await db.screenshots.delete_one({"id": sid})
     await db.matches.update_many({"screenshot_id": sid}, {"$set": {"screenshot_id": None, "screenshot_removed": why}})
+    await db.tournament_games.update_many({"screenshot_id": sid}, {"$set": {"screenshot_id": None, "screenshot_removed": why}})
     await db.pending_matches.update_one({"id": sid}, {"$set": {"screenshot.removed": why}})
 
 
@@ -3553,8 +3555,9 @@ async def prune_screenshots():
         pendings = {p["id"]: p for p in await db.pending_matches.find(
             {"id": {"$in": [s["id"] for s in shots]}}, {"_id": 0, "ocr": 0}).to_list(100000)}
         used_by = {}
-        for m in await db.matches.find({"screenshot_id": {"$ne": None}}, {"_id": 0, "id": 1, "screenshot_id": 1}).to_list(100000):
-            used_by.setdefault(m["screenshot_id"], []).append(m["id"])
+        for coll in (db.matches, db.tournament_games):   # tournament games keep theirs too
+            for m in await coll.find({"screenshot_id": {"$ne": None}}, {"_id": 0, "id": 1, "screenshot_id": 1}).to_list(100000):
+                used_by.setdefault(m["screenshot_id"], []).append(m["id"])
         keep, first = [], {}
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=STAGED_HOURS)).isoformat()
         for s in shots:
@@ -3572,6 +3575,7 @@ async def prune_screenshots():
             if s["sha256"] in first:    # same image as an older one: point the match at that copy
                 await _keep_learning(pm)
                 await db.matches.update_many({"screenshot_id": s["id"]}, {"$set": {"screenshot_id": first[s["sha256"]]}})
+                await db.tournament_games.update_many({"screenshot_id": s["id"]}, {"$set": {"screenshot_id": first[s["sha256"]]}})
                 await db.screenshots.delete_one({"id": s["id"]})
                 await db.pending_matches.update_one({"id": s["id"]}, {"$set": {"screenshot.removed": "duplicate"}})
                 continue
@@ -3625,6 +3629,8 @@ async def get_match_screenshot(mid: str):
 async def _forget_screenshot(sid: Optional[str], keep_for_mid: str):
     """Delete a stored screenshot nothing else points at any more."""
     if not sid or await db.matches.find_one({"screenshot_id": sid, "id": {"$ne": keep_for_mid}}, {"_id": 1}):
+        return
+    if await db.tournament_games.find_one({"screenshot_id": sid, "id": {"$ne": keep_for_mid}}, {"_id": 1}):
         return
     pm = await db.pending_matches.find_one({"id": sid}, {"_id": 0, "status": 1})
     if pm and pm.get("status") == "pending":
@@ -4840,6 +4846,9 @@ async def _log_tournament_game(data: "MatchCreate", by: Optional[str], code: Opt
             raise HTTPException(400, f"Team {label} cannot pick the same champion twice")
     tid, _ = await _tournament_match_check(data.tournament_match_id, [p.player_id for p in team_a],
                                            [p.player_id for p in team_b], data.format)
+    if data.screenshot_id:   # read on the Log Match form: kept with the game
+        await _staged_screenshot(data.screenshot_id)
+        extra = {**(extra or {}), "screenshot_id": data.screenshot_id}
     doc = {"id": str(uuid.uuid4()), "tournament_id": tid, "tournament_match_id": data.tournament_match_id,
            "format": data.format, "team_a_rounds": data.team_a_rounds, "team_b_rounds": data.team_b_rounds,
            "winner_team": "A" if data.team_a_rounds > data.team_b_rounds else "B",
@@ -4849,6 +4858,10 @@ async def _log_tournament_game(data: "MatchCreate", by: Optional[str], code: Opt
            "logged_by": by, "logged_at": _now_iso(), **(extra or {})}
     await db.tournament_games.insert_one(doc)
     doc.pop("_id", None)
+    if data.screenshot_id:
+        await db.screenshots.update_one({"id": data.screenshot_id}, {"$set": {"tournament_game_id": doc["id"]},
+                                                                      "$unset": {"staged": "", "staged_for": ""}})
+        await _compress_stored(data.screenshot_id)
     await _tournament_game_mmr(doc)
     _spawn(_tournament_progress(tid))
     return doc
@@ -4917,7 +4930,7 @@ async def _tournament_games(t: dict) -> Dict[str, list]:
             continue
         out.setdefault(mid, []).append({
             "winner": side[m["winner_team"]], "rounds": {side["A"]: m["team_a_rounds"], side["B"]: m["team_b_rounds"]},
-            "game_id": m["id"], "code": m.get("code"), "played_at": m["played_at"],
+            "game_id": m["id"], "code": m.get("code"), "played_at": m["played_at"], "screenshot_id": m.get("screenshot_id"),
             "players": [{"player_id": p["player_id"], "champion": p["champion"], "team": side[p["team"]]} for p in m["players"]]})
     return out
 
@@ -5235,7 +5248,10 @@ async def edit_tournament(tid: str, data: TournamentEdit, user: dict = Depends(a
 async def delete_tournament(tid: str, user: dict = Depends(admin_required)):
     """The tournament goes, with its games (they aren't logged anywhere else) and any MMR they moved."""
     await _tournament_or_404(tid)
+    shots = await db.tournament_games.distinct("screenshot_id", {"tournament_id": tid, "screenshot_id": {"$ne": None}})
     await db.tournament_games.delete_many({"tournament_id": tid})
+    for sid in shots:
+        await _forget_screenshot(sid, "")
     await _drop_tournament_mmr({"tournament_id": tid})
     await db.tournaments.delete_one({"id": tid})
     return {"ok": True}
@@ -5244,9 +5260,10 @@ async def delete_tournament(tid: str, user: dict = Depends(admin_required)):
 @api_router.delete("/tournaments/{tid}/games/{gid}")
 async def delete_tournament_game(tid: str, gid: str, user: dict = Depends(admin_required)):
     """Remove a wrongly entered game; the series, standings and bracket follow."""
-    res = await db.tournament_games.delete_one({"id": gid, "tournament_id": tid})
-    if not res.deleted_count:
+    game = await db.tournament_games.find_one_and_delete({"id": gid, "tournament_id": tid}, {"_id": 0, "screenshot_id": 1})
+    if not game:
         raise HTTPException(404, "Game not found")
+    await _forget_screenshot(game.get("screenshot_id"), gid)
     await _drop_tournament_mmr({"tournament_game_id": gid})
     await _tournament_progress(tid)
     return await _tournament_full(await _tournament_or_404(tid))
