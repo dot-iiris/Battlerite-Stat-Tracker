@@ -4599,18 +4599,21 @@ async def _create_rotation(data: TournamentCreate, name: str, size: int, user: d
     return await _tournament_view(doc)
 
 
-# A tournament starts hidden: only admins see it until one makes it visible. Then anyone logged in
-# can follow it. A stream overlay can't log in: its link carries the tournament's stream key.
+# A tournament starts hidden: only admins see it until one makes it visible. Then anyone can follow
+# it, guests (no account) included. A stream overlay can't log in: its link carries the stream key.
+async def _viewer_is_admin(request: Request) -> bool:
+    try:
+        return (await get_current_user(request)).get("role") == "admin"
+    except HTTPException:   # guest, or a stale login
+        return False
+
+
 async def _tournament_for_viewer(tid: str, request: Request, key: Optional[str]) -> tuple:
     """-> (tournament, viewer is an admin or holds the stream key)"""
     t = await _tournament_or_404(tid)
     if key and t.get("stream_key") and secrets.compare_digest(key, t["stream_key"]):
         return t, True
-    try:
-        user = await get_current_user(request)
-    except HTTPException:
-        raise HTTPException(404, "Tournament not found")
-    if user.get("role") == "admin":
+    if await _viewer_is_admin(request):
         return t, True
     if not t.get("visible"):
         raise HTTPException(404, "Tournament not found")
@@ -4618,9 +4621,9 @@ async def _tournament_for_viewer(tid: str, request: Request, key: Optional[str])
 
 
 @api_router.get("/tournaments")
-async def list_tournaments(user: dict = Depends(get_current_user)):
+async def list_tournaments(request: Request):
     out = []
-    q = {} if user.get("role") == "admin" else {"visible": True}
+    q = {} if await _viewer_is_admin(request) else {"visible": True}
     async for t in db.tournaments.find(q, {"_id": 0}).sort("created_at", -1):
         champ = None
         if t["status"] == "finished":
