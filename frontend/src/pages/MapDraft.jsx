@@ -14,7 +14,7 @@ const btn = "flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud upperca
 
 // order presets: each letter is a turn (A = first team), and whether that turn bans or picks
 export const PRESETS = [
-  { key: "abaa", label: "Bans A-B-A-A, random from what's left", order: "ABAA", actions: "BBBB", decider: "random" },
+  { key: "abba", label: "Bans A-B-B-A, random from what's left", order: "ABBA", actions: "BBBB", decider: "random" },
 ];
 const DECIDERS = { last: "The last map left", random: "Random from what's left", none: "No decider" };
 export const MODES = {
@@ -24,7 +24,7 @@ export const MODES = {
 };
 
 // bump when the presets change: a draft saved before then starts over on the current preset
-const DRAFT_VERSION = 2;
+const DRAFT_VERSION = 3;
 function load() {
   let s = {};
   try { s = JSON.parse(window.localStorage.getItem(STORE_KEY) || "null") || {}; } catch { /* private window */ }
