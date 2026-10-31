@@ -4,7 +4,7 @@ import api from "@/api";
 import { toast } from "sonner";
 import { ArrowLeft, Copy, Flag, Pencil, PlayCircle, PlusCircle, Trash2, Trophy, Tv, Check, X, SkipForward } from "lucide-react";
 import { useAuth } from "@/AuthContext";
-import { Bracket, Standings, StatusChip, matchNames, stageText, LEAGUE_NAMES, PLAYOFF_NAMES } from "@/components/TournamentParts";
+import { Bracket, Standings, StatusChip, matchNames, rotationMembers, stageText, LEAGUE_NAMES, PLAYOFF_NAMES } from "@/components/TournamentParts";
 
 const TABS = [
   { key: "bracket", label: "Bracket" },
@@ -16,12 +16,17 @@ const TABS = [
 const btn = "flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase tracking-wider border rounded transition-colors";
 const errText = (err, fallback) => err?.response?.data?.detail || fallback;
 
-function MatchRow({ t, m, names, isAdmin, act, highlight }) {
+function MatchRow({ t, m, names, isAdmin, act, highlight, members }) {
   const open = ["ready", "live"].includes(m.status);
   const score = m.status === "bye" ? "" : m.status === "forfeit" ? (m.winner === m.team1 ? "W - FF" : "FF - W") : m.best_of > 1 ? `${m.wins1} - ${m.wins2}` : m.games ? `${m.rounds1} - ${m.rounds2}` : "vs";
   const side = (n) => {
     const won = m.done && m.winner && m.winner === m[`team${n}`];
-    return <span className={`truncate ${won ? "text-cyan-300 font-semibold" : m.done ? "text-slate-500" : ""}`}>{m[`team${n}_name`] || "TBD"}</span>;
+    const cls = won ? "text-cyan-300 font-semibold" : m.done ? "text-slate-500" : "";
+    const players = m[`team${n}`] && members?.(m[`team${n}`]);
+    if (players) {   // player rotation: one player per line, so long teams aren't cut off
+      return <span className={`flex flex-col min-w-0 ${n === 1 ? "text-right" : ""} ${cls}`}>{players.map((p, i) => <span key={i} className="truncate">{p}</span>)}</span>;
+    }
+    return <span className={`truncate ${cls}`}>{m[`team${n}_name`] || "TBD"}</span>;
   };
   return (
     <div id={`tm-${m.id}`} className={`rounded border px-3 py-2 space-y-1.5 ${highlight ? "border-cyan-400" : "border-[#1B2438]"}`} data-testid={`tmatch-${m.id}`}>
@@ -78,6 +83,7 @@ function MatchRow({ t, m, names, isAdmin, act, highlight }) {
 
 function MatchesTab({ t, isAdmin, act, focus }) {
   const names = useMemo(() => matchNames(t.matches), [t.matches]);
+  const members = useMemo(() => rotationMembers(t), [t]);
   const sections = [];
   for (const m of t.matches) {
     const key = m.stage === "league" ? (m.group ? `Group ${m.group} · Round ${m.round}` : `Round ${m.round}`) : m.label || "Playoffs";
@@ -102,7 +108,7 @@ function MatchesTab({ t, isAdmin, act, focus }) {
           {t.rests?.[s.matches[0].round]?.length > 0 && s.matches[0].stage === "league" && (
             <div className="text-xs text-slate-500">Sitting out: {t.rests[s.matches[0].round].map((pid) => t.player_names?.[pid] || "?").join(", ")}</div>
           )}
-          {s.matches.map((m) => <MatchRow key={m.id} t={t} m={m} names={names} isAdmin={isAdmin} act={act} highlight={m.id === focus} />)}
+          {s.matches.map((m) => <MatchRow key={m.id} t={t} m={m} names={names} isAdmin={isAdmin} act={act} highlight={m.id === focus} members={members} />)}
         </div>
       ))}
     </div>

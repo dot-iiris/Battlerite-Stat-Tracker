@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { API } from "@/api";
-import { Bracket, Standings, MatchCard, matchNames, stageText } from "@/components/TournamentParts";
+import { Bracket, Standings, MatchCard, matchNames, rotationMembers, stageText } from "@/components/TournamentParts";
 
 // A tournament for a stream overlay (OBS Browser Source): no login, no menus, refreshes itself.
 //   /stream/tournament/<id>?key=<stream key>&view=bracket|standings|next  &bg=transparent  &scale=1.25  &title=0
@@ -45,6 +45,7 @@ export default function TournamentStream() {
 
   const next = t ? t.matches.filter((m) => ["live", "ready"].includes(m.status)).sort((a, b) => (a.status === "live" ? -1 : 0) - (b.status === "live" ? -1 : 0)) : [];
   const names = t ? matchNames(t.matches) : {};
+  const members = rotationMembers(t);
 
   return (
     <div className={`min-h-screen text-slate-100 p-6 ${clear ? "bg-transparent" : "bg-[#06080E]"}`} data-testid="tournament-stream">
@@ -63,7 +64,7 @@ export default function TournamentStream() {
               <div className={`min-w-[40rem] ${clear ? "p-3 rounded bg-[#06080E]/85" : ""}`}><Standings t={t} big /></div>
             ) : view === "next" ? (
               <div className="flex flex-wrap gap-3" data-testid="stream-next">
-                {next.length ? next.map((m) => <MatchCard key={m.id} m={m} names={names} />) :
+                {next.length ? next.map((m) => <MatchCard key={m.id} m={m} names={names} members={members} />) :
                   <div className="text-sm text-slate-400">{t.champion_name ? `${t.champion_name} won the tournament` : "No matches to play right now"}</div>}
               </div>
             ) : (
