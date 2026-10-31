@@ -358,7 +358,7 @@ export default function Tournaments() {
         <div>
           <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Competitions</div>
           <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Tournaments</h1>
-          <p className="text-sm text-slate-400 mt-2 max-w-3xl">Each one keeps its own games and stats, separate from ranked and unranked.{isAdmin ? " A new tournament is hidden from players until you make it visible on its page." : ""}</p>
+          {isAdmin && <p className="text-sm text-slate-400 mt-2 max-w-3xl">A new tournament is hidden from players until you make it visible on its page.</p>}
         </div>
         {isAdmin && (
           <button onClick={() => setParams(creating ? {} : { new: "1" })} data-testid="tour-new"
