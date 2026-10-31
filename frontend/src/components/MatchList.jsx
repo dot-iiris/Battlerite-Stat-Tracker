@@ -12,13 +12,10 @@ import { MatchCode } from "@/components/FormatFilter";
 //   focusChampion: the side that played that champion shows first; its picks are outlined
 //   limit:         rows shown before "Show all" (showAllButton=false to never show more)
 //   linkTo:        m => url - rows go to that page instead of opening in place
-//   detailsProps:  m => extra props for the opened MatchDetails (tournament games: their own stats path etc.)
-//   rowExtra:      m => something to show in the row's right-hand column (labels, buttons)
 export default function MatchList({
   matches, playerName, seasons = [], onChanged,
   focusPlayer = null, focusChampion = null,
   limit = 10, showAllButton = true, emptyText = "No matches found.", testid = "match-list", linkTo = null,
-  detailsProps = null, rowExtra = null,
 }) {
   const [openId, setOpenId] = useState(null);
   const [showAll, setShowAll] = useState(false);
@@ -89,7 +86,6 @@ export default function MatchList({
               </div>
               <div className="col-span-2 sm:col-span-1 flex sm:flex-col items-center sm:items-end justify-between gap-1 text-xs font-mono-hud text-slate-500 whitespace-nowrap border-t border-[#1B2438] pt-2 sm:border-0 sm:pt-0">
                 {me && <MmrChange p={me} />}
-                {rowExtra?.(m)}
                 <MatchCode match={m} />
                 <span className="flex items-center gap-1">
                   {new Date(m.played_at).toLocaleDateString()}
@@ -102,7 +98,7 @@ export default function MatchList({
               <div className="px-3 pb-3">
                 <MatchDetails match={m} playerName={playerName} onChanged={onChanged}
                   highlight={focusPlayer || focusChampion ? marked : null} tone={focusPlayer ? "cyan" : "gold"}
-                  seasonName={seasons.find((x) => x.id === m.season_id)?.name} {...(detailsProps?.(m) || {})} />
+                  seasonName={seasons.find((x) => x.id === m.season_id)?.name} />
               </div>
             )}
           </div>
