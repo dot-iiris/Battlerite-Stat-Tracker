@@ -5,6 +5,7 @@ import { AlertTriangle, CheckCircle2, ImageUp, Inbox, Link2, RefreshCw, Trash2, 
 import { invalidateChampionStats } from "@/lib/championStats";
 import OcrAccuracy from "@/components/OcrAccuracy";
 import OcrSpeed from "@/components/OcrSpeed";
+import { teamPlayers } from "@/lib/roleOrder";
 
 const STAT_FIELDS = ["score", "damage", "protection", "disables"];
 const inputCls = "bg-[#121828] border border-[#1B2438] focus:border-cyan-400 focus:outline-none rounded px-2 py-1.5 text-sm";
@@ -228,7 +229,7 @@ function CheckCard({ m, playerName, onDone }) {
       toast.error(err?.response?.data?.detail || "Failed");
     }
   };
-  const team = (t) => m.players.filter((p) => p.team === t).map((p) => `${playerName(p.player_id)} (${p.champion})`).join(", ");
+  const team = (t) => teamPlayers(m.players, t).map((p) => `${playerName(p.player_id)} (${p.champion})`).join(", ");
   return (
     <div className="hud-card p-4 space-y-2" data-testid={`check-${m.id}`}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono-hud uppercase tracking-wider text-slate-400">
