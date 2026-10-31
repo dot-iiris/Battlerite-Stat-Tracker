@@ -26,7 +26,11 @@ const TONES = {
   gold: { row: "bg-[#FFB800]/[0.07]", ring: "ring-[#FFB800]", name: "text-[#FFB800] font-bold" },
 };
 
-export default function MatchDetails({ match, playerName, seasonName, onChanged, highlight = null, tone = "cyan" }) {
+// A tournament game passes statsPath and screenshotUrl (it isn't a logged match), editable={false},
+// teamNames {A, B} and showMmr={false} when the tournament doesn't move MMR.
+export default function MatchDetails({ match, playerName, seasonName, onChanged, highlight = null, tone = "cyan",
+  statsPath = null, screenshotUrl, editable = true, teamNames = null, showMmr = true }) {
+  const teamLabel = (team) => teamNames?.[team] || `Team ${team}`;
   const hl = (p) => !!highlight && highlight(p);
   const T = TONES[tone] || TONES.cyan;
   const portrait = (p) => (
@@ -77,15 +81,15 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged,
 
   useEffect(() => {
     let alive = true;
-    api.get(`/matches/${match.id}/stats`)
+    api.get(statsPath || `/matches/${match.id}/stats`)
       .then((r) => alive && setStats(r.data))
       .catch(() => alive && setError(true));
     return () => { alive = false; };
-  }, [match.id]);
+  }, [match.id, statsPath]);
 
   const byPlayer = Object.fromEntries((stats?.players || []).map((p) => [p.player_id, p]));
   const hasStats = (stats?.players || []).some((p) => p.raw);
-  const shotUrl = shotId ? `${API}/matches/${match.id}/screenshot?v=${shotId}` : null;
+  const shotUrl = screenshotUrl !== undefined ? screenshotUrl : shotId ? `${API}/matches/${match.id}/screenshot?v=${shotId}` : null;
 
   const teamRows = (team) => match.players.filter((p) => p.team === team).map((p) => {
     const s = byPlayer[p.player_id] || {};
@@ -109,7 +113,7 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged,
           </td>
         ))}
         <td className="py-2 pl-2 text-right font-mono-hud text-sm text-cyan-400">{fmt(d.damage_normalised, 1)}</td>
-        <td className="py-2 pl-2 text-right"><MmrChange p={p} size="text-xs" /></td>
+        {showMmr && <td className="py-2 pl-2 text-right"><MmrChange p={p} size="text-xs" /></td>}
       </tr>
     );
   });
@@ -120,7 +124,7 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged,
     return (
       <div className="min-w-0">
         <div className={`font-heading font-black uppercase tracking-wide text-sm mb-1 ${team === "A" ? "text-cyan-400" : "text-[#FF2E55]"}`}>
-          Team {team} {won && <span className="text-[10px] font-mono-hud text-[#00E676] ml-1">WIN</span>}
+          {teamLabel(team)} {won && <span className="text-[10px] font-mono-hud text-[#00E676] ml-1">WIN</span>}
         </div>
         {match.players.filter((p) => p.team === team).map((p) => (
           <div key={`${team}-${p.player_id}`} className={`flex items-center gap-2 py-1.5 px-1 border-t border-[#1B2438] ${hl(p) ? T.row : ""}`}>
@@ -129,7 +133,7 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged,
               <Link to={`/players/${p.player_id}`} className={nameClass(p)}>{playerName(p.player_id)}</Link>
               <div className="text-[10px] font-mono-hud text-slate-500 truncate">{p.champion}</div>
             </div>
-            <MmrChange p={p} size="text-xs" />
+            {showMmr && <MmrChange p={p} size="text-xs" />}
           </div>
         ))}
       </div>
@@ -139,11 +143,11 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged,
   const header = (team, won) => (
     <tr>
       <th className={`text-left py-2 pr-3 font-heading font-black uppercase tracking-wide ${team === "A" ? "text-cyan-400" : "text-[#FF2E55]"}`}>
-        Team {team} {won && <span className="text-[10px] font-mono-hud text-[#00E676] ml-1">WIN</span>}
+        {teamLabel(team)} {won && <span className="text-[10px] font-mono-hud text-[#00E676] ml-1">WIN</span>}
       </th>
       {STATS.map((s) => <th key={s.key} className="py-2 px-2 text-right text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 font-normal">{s.label}</th>)}
       <th className="py-2 pl-2 text-right text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 font-normal" title="Damage minus the enemy team's protection, split by each player's share of their team's damage">Norm. dmg</th>
-      <th className="py-2 pl-2 text-right text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 font-normal">MMR</th>
+      {showMmr && <th className="py-2 pl-2 text-right text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 font-normal">MMR</th>}
     </tr>
   );
 
@@ -162,7 +166,7 @@ export default function MatchDetails({ match, playerName, seasonName, onChanged,
             <ImageIcon className="w-3 h-3" /> Screenshot
           </a>
         )}
-        {isAdmin && (
+        {isAdmin && editable && (
           <>
             <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
               onChange={(e) => uploadShot(e.target.files?.[0])} data-testid={`match-shot-input-${match.id}`} />
