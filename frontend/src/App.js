@@ -73,7 +73,7 @@ function App() {
           <Route path="/settings" element={<Protected adminOnly><Settings /></Protected>} />
           <Route path="/tournament" element={<Protected adminOnly><Tournament /></Protected>} />
           <Route path="/tournaments" element={<Protected><Tournaments /></Protected>} />
-          <Route path="/maps" element={<Protected adminOnly><MapDraft /></Protected>} />
+          <Route path="/maps" element={<Protected><MapDraft /></Protected>} />
           <Route path="/tournaments/:id" element={<Protected><TournamentView /></Protected>} />
           {/* stream overlays: no login (the link carries the tournament's stream key), no menus */}
           <Route path="/stream/tournament/:id" element={<TournamentStream />} />

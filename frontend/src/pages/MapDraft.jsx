@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Ban, Check, Copy, Dices, RotateCcw, Undo2 } from "lucide-react";
 import MapPoolPicker from "@/components/MapPoolPicker";
 
-// Admins (preview): map drafting between two teams in a chosen ban / pick order, and a random map picker
+// Everyone (guests too): map drafting between two teams in a chosen ban / pick order, and a random map picker
 // that can repeat maps or not. Runs in the browser only - nothing is saved on the server; the draft and
 // the picker's history are kept in this browser so a refresh doesn't lose them.
 const STORE_KEY = "brstats.mapDraft";
@@ -14,11 +14,7 @@ const btn = "flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud upperca
 
 // order presets: each letter is a turn (A = first team), and whether that turn bans or picks
 export const PRESETS = [
-  { key: "abba", label: "ABBA bans, last map left", order: "ABBA", actions: "BBBB", decider: "last" },
-  { key: "aabb", label: "AABB bans, last map left", order: "AABB", actions: "BBBB", decider: "last" },
-  { key: "abab", label: "ABAB bans, last map left", order: "ABAB", actions: "BBBB", decider: "last" },
-  { key: "bo3", label: "Bo3: ban AB, pick AB, ban AB, decider", order: "ABABAB", actions: "BBPPBB", decider: "random" },
-  { key: "pick", label: "ABBA picks", order: "ABBA", actions: "PPPP", decider: "none" },
+  { key: "abaa", label: "Bans A-B-A-A, random from what's left", order: "ABAA", actions: "BBBB", decider: "random" },
 ];
 const DECIDERS = { last: "The last map left", random: "Random from what's left", none: "No decider" };
 export const MODES = {
@@ -62,9 +58,9 @@ export function drawMap(pool, history, mode, recentN) {
 function Draft({ pool, saved, save }) {
   const [teamA, setTeamA] = useState(saved.teamA || "Team A");
   const [teamB, setTeamB] = useState(saved.teamB || "Team B");
-  const [order, setOrder] = useState(saved.order || "ABBA");
-  const [actions, setActions] = useState(saved.actions || "BBBB");
-  const [decider, setDecider] = useState(saved.decider || "last");
+  const [order, setOrder] = useState(saved.order || PRESETS[0].order);
+  const [actions, setActions] = useState(saved.actions || PRESETS[0].actions);
+  const [decider, setDecider] = useState(saved.decider || PRESETS[0].decider);
   const [steps, setSteps] = useState(saved.steps || []);   // [{team, action, map}] done so far
   useEffect(() => { save({ teamA, teamB, order, actions, decider, steps }); },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -245,11 +241,10 @@ export default function MapDraft() {
   const [parts, setParts] = useState({ draft: saved.draft || {}, picker: saved.picker || {} });
 
   useEffect(() => {
-    Promise.all([api.get("/admin/settings"), api.get("/seasons")]).then(([s, se]) => {
-      const general = (k) => s.data.settings.find((r) => r.key === k)?.value || [];
+    Promise.all([api.get("/maps"), api.get("/seasons")]).then(([s, se]) => {
       const season = se.data.find((x) => x.active && x.ranked !== false);
       const pools = {};
-      for (const f of ["2v2", "3v3"]) pools[f] = season?.map_pools?.[f] || general(`MAP_POOL_${f.toUpperCase()}`);
+      for (const f of ["2v2", "3v3"]) pools[f] = season?.map_pools?.[f] || s.data.pools[f] || [];
       setInfo({ names: s.data.map_names || [], pools, season: season?.name });
       setPool((cur) => cur || pools[format]);
     }).catch(() => toast.error("Couldn't load the map pools"));
@@ -268,7 +263,7 @@ export default function MapDraft() {
       <div>
         <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Maps</div>
         <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Map Draft</h1>
-        <p className="text-sm text-slate-400 mt-2 max-w-3xl">Admin preview. Ban and pick maps in turns, or roll a random map. Nothing is saved on the site - it's kept in this browser only.</p>
+        <p className="text-sm text-slate-400 mt-2 max-w-3xl">Ban and pick maps in turns, or roll a random map. Nothing is saved on the site - it's kept in this browser only.</p>
       </div>
 
       <details className="hud-card p-4" data-testid="md-pool">
