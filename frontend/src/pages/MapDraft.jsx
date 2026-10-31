@@ -23,8 +23,13 @@ export const MODES = {
   recent: "No repeat of the last N maps",
 };
 
+// bump when the presets change: a draft saved before then starts over on the current preset
+const DRAFT_VERSION = 2;
 function load() {
-  try { return JSON.parse(window.localStorage.getItem(STORE_KEY) || "null") || {}; } catch { return {}; }
+  let s = {};
+  try { s = JSON.parse(window.localStorage.getItem(STORE_KEY) || "null") || {}; } catch { /* private window */ }
+  if (s.draftVersion !== DRAFT_VERSION) s.draft = {};
+  return s;
 }
 
 // "Mount Araz (Night)" -> "Mount Araz"
@@ -252,7 +257,7 @@ export default function MapDraft() {
   }, []);
 
   useEffect(() => {
-    try { window.localStorage.setItem(STORE_KEY, JSON.stringify({ tab, format, pool, ...parts })); } catch { /* private window */ }
+    try { window.localStorage.setItem(STORE_KEY, JSON.stringify({ tab, format, pool, ...parts, draftVersion: DRAFT_VERSION })); } catch { /* private window */ }
   }, [tab, format, pool, parts]);
 
   if (!info || !pool) return <div className="text-sm text-slate-500">Loading…</div>;
