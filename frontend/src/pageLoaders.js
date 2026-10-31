@@ -20,6 +20,7 @@ export const PAGE_LOADERS = {
   "/settings": () => import("@/pages/Settings"),
   "/tournament": () => import("@/pages/Tournament"),
   "/tournaments": () => import("@/pages/Tournaments"),
+  "/maps": () => import("@/pages/MapDraft"),
   "/tournaments/:id": () => import("@/pages/TournamentView"),
   "/stream/tournament/:id": () => import("@/pages/TournamentStream"),
 };
