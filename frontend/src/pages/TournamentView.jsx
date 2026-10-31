@@ -45,6 +45,8 @@ function MatchRow({ t, m, names, isAdmin, act, highlight, members, playerName })
         <span className="text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 w-40 truncate">{names[m.id]}{m.best_of > 1 ? ` · Bo${m.best_of}` : ""}</span>
         {m.status === "bye" ? (
           <span className="text-sm text-slate-400 flex-1">{m.team1_name} has a bye</span>
+        ) : games.length > 0 ? (
+          <span className="flex-1" />   // the game cards below show the teams and scores
         ) : (
           <span className="flex items-center gap-2 text-sm flex-1 min-w-0">
             {side(1)}<span className="font-mono-hud text-slate-300 shrink-0">{score}</span>{side(2)}
