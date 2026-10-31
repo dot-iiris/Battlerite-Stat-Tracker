@@ -19,6 +19,15 @@ export function matchNames(matches) {
   return out;
 }
 
+// A player rotation team's players' names, one each (its name is them all joined, too long for one line);
+// null for any other tournament, whose teams keep their own names
+export function rotationMembers(t) {
+  if (t?.league?.type !== "rotation") return null;
+  const byTeam = {};
+  for (const x of t.teams || []) byTeam[x.id] = (x.player_ids || []).map((pid) => t.player_names?.[pid] || "?");
+  return (teamId) => byTeam[teamId] || null;
+}
+
 const srcText = (src, names) => {
   if (!src) return "TBD";
   if (src.seed) return `Seed ${src.seed}`;
@@ -52,16 +61,17 @@ const sideScore = (m, n) => {
   return m.best_of > 1 ? m[`wins${n}`] : m[`rounds${n}`];
 };
 
-export function MatchCard({ m, names, onClick, compact }) {
+export function MatchCard({ m, names, onClick, compact, members }) {
   const row = (n) => {
     const team = m[`team${n}`];
     const name = m[`team${n}_name`];
     const won = m.done && m.winner && m.winner === team;
     const lost = m.done && m.winner && m.winner !== team;
+    const players = team && members?.(team);
     return (
       <div className={`flex items-center justify-between gap-2 px-2.5 ${compact ? "py-1" : "py-1.5"} ${won ? "bg-cyan-400/10" : ""}`}>
-        <span className={`truncate text-sm ${won ? "text-cyan-300 font-semibold" : lost ? "text-slate-500" : name ? "text-slate-100" : "text-slate-500 italic text-xs"}`}>
-          {name || srcText(m[`src${n}`], names)}
+        <span className={`min-w-0 text-sm ${players ? "flex flex-col" : "truncate"} ${won ? "text-cyan-300 font-semibold" : lost ? "text-slate-500" : name ? "text-slate-100" : "text-slate-500 italic text-xs"}`}>
+          {players ? players.map((p, i) => <span key={i} className="truncate">{p}</span>) : name || srcText(m[`src${n}`], names)}
         </span>
         <span className={`font-mono-hud text-sm font-bold ${won ? "text-cyan-300" : "text-slate-400"}`}>{sideScore(m, n)}</span>
       </div>
