@@ -5,6 +5,7 @@ import { Flame, Users, TrendingUp, History } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import ChampionPortrait from "@/components/ChampionPortrait";
 import StreakBadge from "@/components/StreakBadge";
+import TrophyBadges from "@/components/TrophyBadges";
 import { tierFor } from "@/lib/tiers";
 import SeasonSelect, { savedSeason } from "@/components/SeasonSelect";
 import FormatFilter, { byFormat } from "@/components/FormatFilter";
@@ -39,6 +40,7 @@ export default function PlayerProfile() {
   const [format, setFormat] = useState("all");
   const [allMates, setAllMates] = useState(false);
   const [allFoes, setAllFoes] = useState(false);
+  const [trophies, setTrophies] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -54,6 +56,11 @@ export default function PlayerProfile() {
     if (seasonId) params.season_id = seasonId;
     return api.get("/matches", { params }).then((r) => setMatches(r.data));
   }, [id, seasonId]);
+
+  useEffect(() => {
+    setTrophies([]);
+    api.get(`/players/${id}/trophies`).then((r) => setTrophies(r.data)).catch(() => {});
+  }, [id]);
 
   useEffect(() => {
     const params = {};
@@ -80,7 +87,7 @@ export default function PlayerProfile() {
       <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
           <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Player Dossier</div>
-          <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight flex items-center gap-3">{stats.player.name}<StreakBadge streak={stats.streak} size="lg" /></h1>
+          <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight flex items-center gap-3 flex-wrap">{stats.player.name}<StreakBadge streak={stats.streak} size="lg" /><TrophyBadges trophies={trophies} size="lg" /></h1>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <FormatFilter value={format} onChange={setFormat} testid="profile-format" />

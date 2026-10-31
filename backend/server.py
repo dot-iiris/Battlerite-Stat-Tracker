@@ -4687,6 +4687,40 @@ async def _tournament_full(t: dict) -> dict:
     return view
 
 
+def _tournament_places(t: dict, view: dict) -> Dict[str, int]:
+    """Top-3 places of a finished tournament by player: {player id: 1 | 2 | 3}. The bracket decides
+    what it can; a single league table fills the rest (a league-only tournament, or a playoff of
+    two teams after a league)."""
+    if view.get("status") != "finished" or not view.get("champion"):
+        return {}
+    res = {m["id"]: m for m in view["matches"]}
+    places = T_.playoff_places(t["matches"], res)
+    if len(view["standings"]) == 1:
+        for row in view["standings"][0]["rows"]:
+            if len(places) >= 3:
+                break
+            places.setdefault(row["team"], len(places) + 1)
+    if _is_rotation(t):   # the table's "teams" are players
+        return {pid: p for pid, p in places.items() if pid in (t.get("players") or [])}
+    members = {x["id"]: x["player_ids"] for x in t["teams"]}
+    return {pid: p for team, p in places.items() for pid in members.get(team, [])}
+
+
+@api_router.get("/players/{pid}/trophies")
+async def player_trophies(pid: str):
+    """Top-3 finishes in visible, finished tournaments, newest first."""
+    out = []
+    async for t in db.tournaments.find({"visible": True, "status": "finished"}, {"_id": 0}):
+        view = await _tournament_view(t)
+        place = _tournament_places(t, view).get(pid)
+        if place:
+            team = None if _is_rotation(t) else next((x["name"] for x in t["teams"] if pid in x["player_ids"]), None)
+            out.append({"tournament_id": t["id"], "tournament_name": t["name"], "format": t.get("format"),
+                        "place": place, "team_name": team, "finished_at": t.get("finished_at") or t.get("created_at")})
+    out.sort(key=lambda x: x["finished_at"] or "", reverse=True)
+    return out
+
+
 @api_router.get("/tournaments/{tid}/stats")
 async def tournament_stats(tid: str, request: Request, key: Optional[str] = None):
     t, _ = await _tournament_for_viewer(tid, request, key)
