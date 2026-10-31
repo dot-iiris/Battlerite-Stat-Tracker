@@ -209,7 +209,7 @@ export function Standings({ t, big }) {
                     <td className={`${td} font-mono-hud text-cyan-300 font-bold`}>{r.wins}</td>
                     <td className={`${td} font-mono-hud text-slate-400`}>{r.losses}</td>
                     {swiss && <td className={`${td} font-mono-hud text-slate-400`}>{r.buchholz}</td>}
-                    <td className={`${td} font-mono-hud text-slate-300`}>{r.game_wins}-{r.game_losses} <span className="text-slate-500 text-xs">({signed(r.game_diff)})</span></td>
+                    <td className={`${td} font-mono-hud text-slate-300`}>{r.game_wins}-{r.game_losses}</td>
                     <td className={`${td} font-mono-hud text-slate-400`}>{signed(r.round_diff)}</td>
                     {rotation && <td className={`${td} font-mono-hud text-slate-500`}>{r.rests}</td>}
                   </tr>
