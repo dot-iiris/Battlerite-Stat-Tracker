@@ -27,9 +27,6 @@ export const MODES = {
   recent: "No repeat of the last N maps",
 };
 
-// "Mount Araz (Night)" -> "Mount Araz"
-export const arenaOf = (m) => m.replace(/\s*\((Day|Night)\)$/i, "");
-
 function load() {
   try { return JSON.parse(window.localStorage.getItem(STORE_KEY) || "null") || {}; } catch { return {}; }
 }
@@ -53,7 +50,7 @@ export function drawMap(pool, history, mode, recentN) {
   return from[Math.floor(Math.random() * from.length)];
 }
 
-function Draft({ pool, sameArena, saved, save }) {
+function Draft({ pool, saved, save }) {
   const [teamA, setTeamA] = useState(saved.teamA || "Team A");
   const [teamB, setTeamB] = useState(saved.teamB || "Team B");
   const [order, setOrder] = useState(saved.order || "ABBA");
@@ -65,7 +62,7 @@ function Draft({ pool, sameArena, saved, save }) {
     [teamA, teamB, order, actions, decider, steps]);
 
   const name = (t) => (t === "A" ? teamA : teamB);
-  const taken = (m) => steps.some((s) => s.map && (sameArena ? arenaOf(s.map) === arenaOf(m) : s.map === m));
+  const taken = (m) => steps.some((s) => s.map === m);
   const left = pool.filter((m) => !taken(m));
   const turns = [...order].map((team, i) => ({ team, action: actions[i] === "P" ? "pick" : "ban" }));
   const turn = turns[steps.length];
@@ -130,7 +127,7 @@ function Draft({ pool, sameArena, saved, save }) {
         </div>
         {decider === "last" && pool.length - order.length !== 1 && (
           <div className="md:col-span-2 xl:col-span-4 text-xs text-amber-400">
-            "The last map left" needs exactly one map left after the turns: the pool has {pool.length}{sameArena ? " (arenas)" : ""}, the order has {order.length} turns.
+            "The last map left" needs exactly one map left after the turns: the pool has {pool.length}, the order has {order.length} turns.
           </div>
         )}
       </div>
@@ -154,7 +151,7 @@ function Draft({ pool, sameArena, saved, save }) {
 
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {pool.map((m) => {
-          const step = steps.find((s) => s.map && (sameArena ? arenaOf(s.map) === arenaOf(m) : s.map === m));
+          const step = steps.find((s) => s.map === m);
           const banned = step?.action === "ban", picked = step?.action === "pick";
           return (
             <button key={m} type="button" disabled={!!step || !turn} onClick={() => choose(m)} data-testid={`md-map-${m}`}
@@ -162,7 +159,7 @@ function Draft({ pool, sameArena, saved, save }) {
               <div className="text-sm font-semibold flex items-center gap-1.5">
                 {banned && <Ban className="w-3.5 h-3.5 text-[#FF2E55]" />}{picked && <Check className="w-3.5 h-3.5" />}{m}
               </div>
-              {step && <div className="text-[10px] font-mono-hud uppercase tracking-wider mt-0.5 no-underline">{step.decider ? "Decider" : `${name(step.team)} · ${step.action}${step.map !== m ? ` (${step.map})` : ""}`}</div>}
+              {step && <div className="text-[10px] font-mono-hud uppercase tracking-wider mt-0.5 no-underline">{step.decider ? "Decider" : `${name(step.team)} · ${step.action}`}</div>}
             </button>
           );
         })}
@@ -236,7 +233,6 @@ export default function MapDraft() {
   const [tab, setTab] = useState(saved.tab || "draft");
   const [format, setFormat] = useState(saved.format || "3v3");
   const [pool, setPool] = useState(saved.pool || null);
-  const [sameArena, setSameArena] = useState(saved.sameArena ?? true);
   const [parts, setParts] = useState({ draft: saved.draft || {}, picker: saved.picker || {} });
 
   useEffect(() => {
@@ -252,12 +248,10 @@ export default function MapDraft() {
   }, []);
 
   useEffect(() => {
-    try { window.localStorage.setItem(STORE_KEY, JSON.stringify({ tab, format, pool, sameArena, ...parts })); } catch { /* private window */ }
-  }, [tab, format, pool, sameArena, parts]);
+    try { window.localStorage.setItem(STORE_KEY, JSON.stringify({ tab, format, pool, ...parts })); } catch { /* private window */ }
+  }, [tab, format, pool, parts]);
 
   if (!info || !pool) return <div className="text-sm text-slate-500">Loading…</div>;
-  // with Day / Night as one arena, each arena shows once (its first version in the pool)
-  const shown = sameArena ? pool.filter((m, i) => pool.findIndex((x) => arenaOf(x) === arenaOf(m)) === i).map(arenaOf) : pool;
   const choosePool = (f) => { setFormat(f); setPool(info.pools[f]); };
 
   return (
@@ -270,7 +264,7 @@ export default function MapDraft() {
 
       <details className="hud-card p-4" data-testid="md-pool">
         <summary className="cursor-pointer text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80">
-          Map pool · {shown.length} {sameArena ? "arenas" : "maps"} <span className="text-slate-500 normal-case tracking-normal ml-2">click to change</span>
+          Map pool · {pool.length} maps <span className="text-slate-500 normal-case tracking-normal ml-2">click to change</span>
         </summary>
         <div className="mt-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -281,10 +275,6 @@ export default function MapDraft() {
             <button type="button" onClick={() => setPool(info.names)} className={`${btn} border-[#1B2438] text-slate-400 hover:border-cyan-400`} data-testid="md-pool-all">Every map</button>
             <span className="text-xs text-slate-500">{info.season ? `The ${info.season} pool where it has its own, else the general one.` : "The general pools (no active ranked season)."}</span>
           </div>
-          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-            <input type="checkbox" checked={sameArena} onChange={(e) => setSameArena(e.target.checked)} data-testid="md-same-arena" />
-            Day and Night count as one arena
-          </label>
           <MapPoolPicker value={pool} mapNames={info.names} onChange={setPool} testid="draft" />
         </div>
       </details>
@@ -296,8 +286,8 @@ export default function MapDraft() {
         ))}
       </div>
 
-      {tab === "draft" && <Draft pool={shown} sameArena={sameArena} saved={parts.draft} save={(v) => setParts((p) => ({ ...p, draft: v }))} />}
-      {tab === "picker" && <Picker pool={shown} saved={parts.picker} save={(v) => setParts((p) => ({ ...p, picker: v }))} />}
+      {tab === "draft" && <Draft pool={pool} saved={parts.draft} save={(v) => setParts((p) => ({ ...p, draft: v }))} />}
+      {tab === "picker" && <Picker pool={pool} saved={parts.picker} save={(v) => setParts((p) => ({ ...p, picker: v }))} />}
     </div>
   );
 }
