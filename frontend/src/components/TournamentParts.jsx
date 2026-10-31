@@ -3,7 +3,7 @@ import { Trophy } from "lucide-react";
 // Pieces shared by the tournament page and its stream overlay: the playoff bracket and the
 // league table(s). Both only display what the website worked out (see backend/tournaments.py).
 
-export const LEAGUE_NAMES = { round_robin: "Round robin", swiss: "Swiss", groups: "Groups" };
+export const LEAGUE_NAMES = { round_robin: "Round robin", swiss: "Swiss", groups: "Groups", rotation: "Player rotation" };
 export const PLAYOFF_NAMES = { single: "Single elimination", double: "Double elimination" };
 
 // "Semifinals 2" etc. - how a match is referred to by the ones fed from it
@@ -165,6 +165,7 @@ const signed = (n) => (n > 0 ? `+${n}` : String(n));
 export function Standings({ t, big }) {
   if (!t.standings?.length) return <div className="text-sm text-slate-400">This tournament has no league stage.</div>;
   const swiss = t.league?.type === "swiss";
+  const rotation = t.league?.type === "rotation";   // rows are players, not teams
   const through = advancing(t);
   const playoffsDrawn = t.matches.some((m) => m.stage === "playoffs");
   const td = big ? "px-3 py-2" : "px-2 py-1.5";
@@ -177,13 +178,14 @@ export function Standings({ t, big }) {
             <thead>
               <tr className="text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 text-right">
                 <th className={`${td} text-left w-8`}>#</th>
-                <th className={`${td} text-left`}>Team</th>
+                <th className={`${td} text-left`}>{rotation ? "Player" : "Team"}</th>
                 <th className={td} title="Series played">P</th>
                 <th className={td} title="Series won">W</th>
                 <th className={td} title="Series lost">L</th>
                 {swiss && <th className={td} title="Buchholz: the wins of the teams you've played (tie-break)">Opp W</th>}
                 <th className={td} title="Games won - lost">Games</th>
                 <th className={td} title="Rounds won - lost">Rounds</th>
+                {rotation && <th className={td} title="Rounds sat out">Out</th>}
               </tr>
             </thead>
             <tbody>
@@ -199,6 +201,7 @@ export function Standings({ t, big }) {
                     {swiss && <td className={`${td} font-mono-hud text-slate-400`}>{r.buchholz}</td>}
                     <td className={`${td} font-mono-hud text-slate-300`}>{r.game_wins}-{r.game_losses} <span className="text-slate-500 text-xs">({signed(r.game_diff)})</span></td>
                     <td className={`${td} font-mono-hud text-slate-400`}>{signed(r.round_diff)}</td>
+                    {rotation && <td className={`${td} font-mono-hud text-slate-500`}>{r.rests}</td>}
                   </tr>
                 );
               })}

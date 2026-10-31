@@ -36,7 +36,11 @@ function CreateForm({ onDone, autoImport }) {
   const [semisBo, setSemisBo] = useState(3);
   const [finalBo, setFinalBo] = useState(3);
   const [saving, setSaving] = useState(false);
+  const [roster, setRoster] = useState([]);   // player rotation: player ids
+  const [pick, setPick] = useState("");
+  const [balance, setBalance] = useState(false);
   const size = format === "2v2" ? 2 : 3;
+  const rotation = league === "rotation";
 
   useEffect(() => { api.get("/players").then((r) => setPlayers(r.data)).catch(() => toast.error("Couldn't load players")); }, []);
   const [imported, setImported] = useState(false);
@@ -47,7 +51,16 @@ function CreateForm({ onDone, autoImport }) {
 
   const find = (n) => players.find((p) => norm(p.name) === norm(n)) || players.find((p) => p.ign && norm(p.ign) === norm(n));
   const used = new Map();
-  teams.forEach((t) => t.slots.forEach((s) => { const p = find(s); if (p) used.set(p.id, (used.get(p.id) || 0) + 1); }));
+  if (rotation) roster.forEach((id) => used.set(id, 1));
+  else teams.forEach((t) => t.slots.forEach((s) => { const p = find(s); if (p) used.set(p.id, (used.get(p.id) || 0) + 1); }));
+  const addPick = () => {
+    const p = find(pick);
+    if (!p) { toast.error("Pick a player who's on the site"); return; }
+    if (!roster.includes(p.id)) setRoster([...roster, p.id]);
+    setPick("");
+  };
+  const perRound = Math.floor(roster.length / (size * 2));
+  const sitting = roster.length - perRound * size * 2;
 
   const changeFormat = (f) => {
     setFormat(f);
@@ -67,12 +80,23 @@ function CreateForm({ onDone, autoImport }) {
     if (!last?.teams?.length) { toast.error("Make some teams on the Make Teams page first"); return; }
     const byId = Object.fromEntries(players.map((p) => [p.id, p.name]));
     setFormat(last.format);
+    if (rotation) {   // only the players matter: teams are made fresh every round
+      setRoster([...new Set(last.teams.flatMap((t) => t.player_ids).filter((id) => byId[id]))]);
+      toast.success("Players brought in");
+      return;
+    }
     setTeams(last.teams.map((t, i) => ({ name: t.name || `Team ${i + 1}`, slots: t.player_ids.map((id) => byId[id] || "") })));
     toast.success(`${last.teams.length} teams brought in, strongest first`);
   };
 
   const submit = async (e) => {
     e.preventDefault();
+    if (rotation) {
+      if (roster.length < size * 2) { toast.error(`Pick at least ${size * 2} players`); return; }
+      if (!rounds) { toast.error("How many rounds?"); return; }
+      return create({ name, format, counts_for_mmr: mmr, players: roster, playoffs: null,
+        league: { type: "rotation", best_of: lgBo, rounds: Number(rounds), balance_mmr: balance } });
+    }
     const out = [];
     for (const t of teams) {
       const ids = t.slots.map(find);
@@ -85,6 +109,10 @@ function CreateForm({ onDone, autoImport }) {
     if (league) body.league = { type: league, best_of: lgBo, rounds: rounds ? Number(rounds) : null, groups: Number(groups), advance_per_group: Number(advance) };
     if (playoffs) body.playoffs = { type: playoffs, grand_reset: reset, best_of: bo, semis_best_of: semisBo, final_best_of: finalBo,
       teams: league && league !== "groups" && through ? Number(through) : null };
+    return create(body);
+  };
+
+  const create = async (body) => {
     setSaving(true);
     try {
       const { data } = await api.post("/tournaments", body);
@@ -131,6 +159,39 @@ function CreateForm({ onDone, autoImport }) {
         </div>
       </div>
 
+      {rotation ? (
+        <div className="space-y-3" data-testid="tc-roster">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className={lbl + " mb-0"}>Players ({roster.length}) · new teams every round</div>
+            <button type="button" onClick={importTeams} data-testid="tc-import"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase border border-[#1B2438] hover:border-cyan-400 rounded">
+              <Download className="w-3.5 h-3.5" /> From Make Teams
+            </button>
+          </div>
+          <datalist id="tc-players">{players.filter((p) => !used.has(p.id)).map((p) => <option key={p.id} value={p.name} />)}</datalist>
+          <div className="flex gap-2">
+            <input value={pick} onChange={(e) => setPick(e.target.value)} list="tc-players" autoComplete="off" placeholder="Player…"
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addPick(); } }}
+              className={`${sel} flex-1 max-w-sm py-1.5`} data-testid="tc-roster-input" />
+            <button type="button" onClick={addPick} data-testid="tc-roster-add"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase border border-[#1B2438] hover:border-cyan-400 rounded">
+              <Plus className="w-3.5 h-3.5" /> Add
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {roster.map((id) => (
+              <span key={id} className="inline-flex items-center gap-1.5 text-sm px-2 py-1 rounded border border-[#1B2438]">
+                {players.find((p) => p.id === id)?.name || "?"}
+                <button type="button" onClick={() => setRoster(roster.filter((x) => x !== id))} className="text-slate-500 hover:text-[#FF2E55]" aria-label="Remove player"><X className="w-3.5 h-3.5" /></button>
+              </span>
+            ))}
+          </div>
+          <div className="text-xs text-slate-500">
+            {perRound ? `${perRound} match${perRound === 1 ? "" : "es"} a round${sitting ? ` · ${sitting} sit${sitting === 1 ? "s" : ""} out each round, taking turns` : ""}.` : `Pick at least ${size * 2} players.`}
+            {" "}Each player gets their team's result; the table is ranked by wins, then fewest losses (so sitting out doesn't hurt), then round difference.
+          </div>
+        </div>
+      ) : (
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className={lbl + " mb-0"}>Teams ({teams.length}) · seed order, top = seed 1</div>
@@ -169,6 +230,7 @@ function CreateForm({ onDone, autoImport }) {
           ))}
         </div>
       </div>
+      )}
 
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-3">
@@ -178,10 +240,20 @@ function CreateForm({ onDone, autoImport }) {
             <option value="round_robin">Round robin - everyone plays everyone</option>
             <option value="swiss">Swiss - paired by record each round</option>
             <option value="groups">Groups - round robin in each group</option>
+            <option value="rotation">Player rotation - new teams every round, players ranked</option>
           </select>
           {league && (
             <div className="flex flex-wrap gap-3 items-end">
               <div><div className="text-[10px] text-slate-500 mb-1">Series</div>{boSelect(lgBo, setLgBo, "tc-league-bo")}</div>
+              {rotation && (
+                <>
+                  <div><div className="text-[10px] text-slate-500 mb-1">Rounds</div>
+                    <input type="number" min="1" max="30" value={rounds} onChange={(e) => setRounds(e.target.value)} className={`${sel} w-28`} data-testid="tc-rot-rounds" /></div>
+                  <label className="flex items-center gap-2 text-sm text-slate-300 pb-2 cursor-pointer" title="Teams are made from MMR in the active ranked season when the tournament is created">
+                    <input type="checkbox" checked={balance} onChange={(e) => setBalance(e.target.checked)} data-testid="tc-rot-balance" /> Even teams by MMR
+                  </label>
+                </>
+              )}
               {league === "swiss" && (
                 <div><div className="text-[10px] text-slate-500 mb-1">Rounds (blank = auto)</div>
                   <input type="number" min="1" value={rounds} onChange={(e) => setRounds(e.target.value)} className={`${sel} w-28`} data-testid="tc-rounds" /></div>
@@ -197,6 +269,11 @@ function CreateForm({ onDone, autoImport }) {
             </div>
           )}
         </div>
+        {rotation ? (
+          <div className="text-xs text-slate-500 self-end">
+            Teams spread partners and opponents as evenly as possible{balance ? ", and each match is as even by MMR as it can be" : ""}. No playoffs: the top of the table wins. Every round is drawn when the tournament is created.
+          </div>
+        ) : (
         <div className="space-y-3">
           <label className={lbl}>Playoffs</label>
           <select value={playoffs} onChange={(e) => setPlayoffs(e.target.value)} className={`${sel} w-full`} data-testid="tc-playoffs">
@@ -222,6 +299,7 @@ function CreateForm({ onDone, autoImport }) {
           )}
           {playoffs === "double" && <div className="text-xs text-slate-500">With a reset, the team from the losers bracket has to win the grand final twice.</div>}
         </div>
+        )}
       </div>
 
       <button type="submit" disabled={saving} data-testid="tc-submit"
@@ -245,7 +323,7 @@ function Section({ title, items, empty, testid }) {
               <div className="min-w-0 flex-1">
                 <div className="font-heading text-xl font-black uppercase truncate">{t.name}</div>
                 <div className="text-xs font-mono-hud uppercase tracking-wider text-slate-400 flex flex-wrap gap-x-3">
-                  <span>{t.format}</span><span>{t.teams} teams</span>
+                  <span>{t.format}</span><span>{t.players != null ? `${t.players} players` : `${t.teams} teams`}</span>
                   {t.league && <span>{LEAGUE_NAMES[t.league]}</span>}
                   {t.playoffs && <span>{PLAYOFF_NAMES[t.playoffs]}</span>}
                   <span>{t.games} game{t.games === 1 ? "" : "s"}</span>
