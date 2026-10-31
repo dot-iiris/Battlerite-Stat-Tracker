@@ -31,22 +31,31 @@ function load() {
   try { return JSON.parse(window.localStorage.getItem(STORE_KEY) || "null") || {}; } catch { return {}; }
 }
 
+// "Mount Araz (Night)" -> "Mount Araz"
+const arenaOf = (m) => m.replace(/\s*\((Day|Night)\)$/i, "");
+
 // A random map from the pool (null if there's none). mode: "with" | "without" | "recent"; history: earlier
 // draws, newest last (it can hold maps no longer in the pool); recentN: how many recent draws "recent" keeps out.
+// Never the other time of day of the map just drawn, in any mode.
 export function drawMap(pool, history, mode, recentN) {
   if (!pool.length) return null;
   let blocked = new Set();
   if (mode === "without") {   // maps drawn in this cycle; a cycle ends once every map has come up
     for (const m of history) {
       if (!pool.includes(m)) continue;
+      if (blocked.has(m)) blocked = new Set();   // a cycle started early (only a variant of the last map was left)
       blocked.add(m);
       if (blocked.size >= pool.length) blocked = new Set();
     }
   } else if (mode === "recent") {
     history.slice(-recentN).forEach((m) => blocked.add(m));
   }
-  const open = pool.filter((m) => !blocked.has(m));
-  const from = open.length ? open : pool;   // all used up: start over
+  const last = history[history.length - 1];
+  // the other time of day of the last map - and, unless repeats are allowed, the last map itself (a new cycle)
+  const variant = (m) => last && arenaOf(m) === arenaOf(last) && (m !== last || mode !== "with");
+  const open = pool.filter((m) => !blocked.has(m) && !variant(m));
+  // all used up (or only the last map's variant is left): start over, still not that arena straight away
+  const from = [open, pool.filter((m) => !last || arenaOf(m) !== arenaOf(last)), pool].find((x) => x.length);
   return from[Math.floor(Math.random() * from.length)];
 }
 
