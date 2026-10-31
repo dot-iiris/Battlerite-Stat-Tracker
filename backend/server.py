@@ -4694,6 +4694,14 @@ async def _reset_setting(key: str, app: Optional[str] = None) -> dict:
     return next(r for r in await _settings_rows() if r["key"] == key)
 
 
+# Map Draft (open to everyone, guests too): every map name and the general 2v2 / 3v3 pools.
+@api_router.get("/maps")
+async def map_pools():
+    rows = {r["key"]: r["value"] for r in await _settings_rows() if r["key"] in ("MAP_POOL_2V2", "MAP_POOL_3V3")}
+    return {"map_names": MAP_NAMES,
+            "pools": {"2v2": rows.get("MAP_POOL_2V2") or [], "3v3": rows.get("MAP_POOL_3V3") or []}}
+
+
 @api_router.get("/admin/settings")
 async def admin_settings(user: dict = Depends(admin_required)):
     meta = (await db.settings_meta.find_one({"id": "bot"}, {"_id": 0})) or {}
