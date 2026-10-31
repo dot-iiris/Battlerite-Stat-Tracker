@@ -502,8 +502,17 @@ async def discord_login_enabled():
     return {"enabled": _discord_enabled()}
 
 
+def _safe_next_path(path: Optional[str]) -> Optional[str]:
+    """A same-site page to land on after login ("/x", never "//host", a full URL or the login pages)."""
+    if not path or len(path) > 500 or not path.startswith("/") or path.startswith(("//", "/\\")):
+        return None
+    if any(ord(c) < 32 or c == "\\" for c in path) or path.startswith(("/login", "/admin-login")):
+        return None
+    return path
+
+
 @api_router.get("/auth/discord/login")
-async def discord_login(request: Request):
+async def discord_login(request: Request, next: Optional[str] = None):
     import secrets
     import urllib.parse
     if not _discord_enabled():
@@ -516,6 +525,13 @@ async def discord_login(request: Request):
     resp = RedirectResponse(url, status_code=302)
     resp.set_cookie("discord_oauth_state", state, httponly=True, samesite="lax", max_age=600, path="/",
                     secure=DISCORD_REDIRECT_URI.startswith("https://"))
+    # the page they opened before logging in, so the callback can send them straight back to it
+    next_path = _safe_next_path(next)
+    if next_path:
+        resp.set_cookie("discord_login_next", next_path, httponly=True, samesite="lax", max_age=600, path="/",
+                        secure=DISCORD_REDIRECT_URI.startswith("https://"))
+    else:
+        resp.delete_cookie("discord_login_next", path="/")
     return resp
 
 
@@ -526,6 +542,7 @@ async def discord_callback(request: Request, code: Optional[str] = None, state: 
     def fail(reason: str):
         r = RedirectResponse(f"{front}/login?discord_error={reason}", status_code=302)
         r.delete_cookie("discord_oauth_state", path="/")
+        r.delete_cookie("discord_login_next", path="/")
         return r
     if error:
         return fail("cancelled")
@@ -543,10 +560,10 @@ async def discord_callback(request: Request, code: Optional[str] = None, state: 
                                             None, tok["access_token"])
     if status >= 300 or not du or not du.get("id"):
         return fail("profile")
-    return await _finish_discord_login(du, front)
+    return await _finish_discord_login(du, front, _safe_next_path(request.cookies.get("discord_login_next")))
 
 
-async def _finish_discord_login(du: dict, front: str):
+async def _finish_discord_login(du: dict, front: str, next_path: Optional[str] = None):
     discord_id = str(du["id"])
     display = du.get("global_name") or du.get("username") or "Discord user"
     role = "admin" if discord_id in DISCORD_ADMIN_IDS else "player"
@@ -568,9 +585,15 @@ async def _finish_discord_login(du: dict, front: str):
     if linked and du.get("username") and linked.get("discord_name") != du["username"]:
         # e.g. an admin linked them by user ID only, or they renamed on Discord
         await db.players.update_one({"id": linked["id"]}, {"$set": {"discord_name": du["username"]}})
-    resp = RedirectResponse(f"{front}/me" if linked else f"{front}/me?setup=1", status_code=302)
+    # back to the page they came from; otherwise their profile (which sends linked players to their player page)
+    if next_path:
+        dest = f"{front}{next_path}"
+    else:
+        dest = f"{front}/me" if linked else f"{front}/me?setup=1"
+    resp = RedirectResponse(dest, status_code=302)
     _set_session_cookie(resp, create_access_token(user["id"], user["email"]))
     resp.delete_cookie("discord_oauth_state", path="/")
+    resp.delete_cookie("discord_login_next", path="/")
     return resp
 
 

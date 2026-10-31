@@ -4,7 +4,12 @@ import api, { API } from "@/api";
 import { useAuth } from "@/AuthContext";
 import { Zap, Eye } from "lucide-react";
 import { toast } from "sonner";
-import { LOGIN_NEXT_KEY, safeNext } from "@/loginNext";
+
+// The page to go back to after logging in: same-site paths only ("/x", not "//host" or "https://...").
+function safeNext(next) {
+  return typeof next === "string" && next.startsWith("/") && !next.startsWith("//") && !next.includes("\\")
+    && !next.startsWith("/login") && !next.startsWith("/admin-login") ? next : null;
+}
 
 // The email/password (admin) form only shows at /admin-login - a direct link, not linked from the site.
 export default function Login({ adminForm = false }) {
@@ -46,14 +51,6 @@ export default function Login({ adminForm = false }) {
     nav(next || "/", { replace: true });
   };
 
-  // Discord login comes back to /me; MyProfile picks this up and goes on to the page they wanted
-  const rememberNext = () => {
-    try {
-      if (next) sessionStorage.setItem(LOGIN_NEXT_KEY, next);
-      else sessionStorage.removeItem(LOGIN_NEXT_KEY);
-    } catch { /* storage blocked: they land on their profile instead */ }
-  };
-
   return (
     <div className="min-h-screen bg-[#06080E] flex items-center justify-center p-6 relative overflow-hidden">
       <div className="absolute inset-0 opacity-30 pointer-events-none" style={{ backgroundImage: "radial-gradient(circle at 20% 30%, rgba(0,240,255,0.15), transparent 50%), radial-gradient(circle at 80% 70%, rgba(255,184,0,0.1), transparent 50%)" }} />
@@ -74,7 +71,7 @@ export default function Login({ adminForm = false }) {
 
         {discordEnabled && (
           <>
-            <a href={`${API}/auth/discord/login`} onClick={rememberNext}
+            <a href={`${API}/auth/discord/login${next ? `?next=${encodeURIComponent(next)}` : ""}`}
               className="w-full flex items-center justify-center gap-2 bg-[#5865F2] hover:bg-[#4752C4] text-white font-mono-hud font-bold uppercase tracking-wider text-sm py-3 rounded transition-colors"
               data-testid="login-discord">
               <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.6 1.3a18.3 18.3 0 0 0-5.6 0L8.6 3a19.7 19.7 0 0 0-4.9 1.5C.6 9.1-.3 13.6.1 18a19.9 19.9 0 0 0 6 3l1.3-2a12.9 12.9 0 0 1-2-1l.5-.4a14.2 14.2 0 0 0 12.2 0l.5.4c-.6.4-1.3.7-2 1l1.3 2a19.8 19.8 0 0 0 6-3c.5-5.1-.8-9.6-3.6-13.6ZM8 15.3c-1.2 0-2.2-1.1-2.2-2.4s1-2.4 2.2-2.4 2.2 1.1 2.2 2.4-1 2.4-2.2 2.4Zm8 0c-1.2 0-2.2-1.1-2.2-2.4s1-2.4 2.2-2.4 2.2 1.1 2.2 2.4-1 2.4-2.2 2.4Z"/></svg>

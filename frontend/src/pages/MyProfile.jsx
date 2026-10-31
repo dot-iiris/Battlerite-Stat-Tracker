@@ -3,16 +3,6 @@ import { Navigate } from "react-router-dom";
 import api from "@/api";
 import { toast } from "sonner";
 import { Clock, Link2, UserCircle } from "lucide-react";
-import { LOGIN_NEXT_KEY, safeNext } from "@/loginNext";
-
-// the page they were trying to open before a Discord login (set on the login page), read once
-function takeLoginNext() {
-  try {
-    const next = safeNext(sessionStorage.getItem(LOGIN_NEXT_KEY));
-    sessionStorage.removeItem(LOGIN_NEXT_KEY);
-    return next;
-  } catch { return null; }
-}
 
 function avatarUrl(user) {
   if (!user?.discord_id || !user?.discord_avatar) return null;
@@ -23,7 +13,6 @@ export default function MyProfile() {
   const [data, setData] = useState(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [loginNext] = useState(takeLoginNext);
 
   const load = useCallback(() => {
     api.get("/me").then((r) => {
@@ -48,8 +37,6 @@ export default function MyProfile() {
     }
   };
 
-  // just logged in from a link: go straight on to that page (linking can wait - the profile icon comes back here)
-  if (loginNext) return <Navigate to={loginNext} replace />;
   if (!data) return <div className="text-slate-400 font-mono-hud">Loading…</div>;
   const { user, player, link_request: req } = data;
   // linked: your profile is your player page
