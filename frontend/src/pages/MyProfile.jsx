@@ -48,10 +48,10 @@ export default function MyProfile() {
     }
   };
 
+  // just logged in from a link: go straight on to that page (linking can wait - the profile icon comes back here)
+  if (loginNext) return <Navigate to={loginNext} replace />;
   if (!data) return <div className="text-slate-400 font-mono-hud">Loading…</div>;
   const { user, player, link_request: req } = data;
-  // just logged in from a link: go on to that page (new, unlinked users stay here to set up first)
-  if (player && loginNext) return <Navigate to={loginNext} replace />;
   // linked: your profile is your player page
   if (player) return <Navigate to={`/players/${player.id}`} replace />;
   const avatar = avatarUrl(user);
