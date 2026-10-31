@@ -99,6 +99,9 @@ function MatchesTab({ t, isAdmin, act, focus }) {
       {sections.map((s) => (
         <div key={s.title} className="space-y-2">
           <div className="text-[10px] font-mono-hud uppercase tracking-[0.25em] text-cyan-400/70">{s.title}</div>
+          {t.rests?.[s.matches[0].round]?.length > 0 && s.matches[0].stage === "league" && (
+            <div className="text-xs text-slate-500">Sitting out: {t.rests[s.matches[0].round].map((pid) => t.player_names?.[pid] || "?").join(", ")}</div>
+          )}
           {s.matches.map((m) => <MatchRow key={m.id} t={t} m={m} names={names} isAdmin={isAdmin} act={act} highlight={m.id === focus} />)}
         </div>
       ))}
@@ -152,6 +155,7 @@ function StatsTab({ tid }) {
   if (!s) return <div className="text-sm text-slate-500">Loading…</div>;
   if (s.error) return <div className="text-sm text-slate-400">Couldn't load the stats.</div>;
   if (!s.games) return <div className="text-sm text-slate-400">No games played yet.</div>;
+  const hasTeams = s.players.some((r) => r.team);   // a player rotation has none
   return (
     <div className="space-y-6" data-testid="tour-stats">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -172,7 +176,7 @@ function StatsTab({ tid }) {
         <table className="w-full text-sm text-slate-100">
           <thead>
             <tr className="text-[10px] font-mono-hud uppercase tracking-wider text-slate-500 text-right">
-              <th className="px-3 py-2 text-left">Player</th><th className="px-3 py-2 text-left">Team</th>
+              <th className="px-3 py-2 text-left">Player</th>{hasTeams && <th className="px-3 py-2 text-left">Team</th>}
               <th className="px-3 py-2">Games</th><th className="px-3 py-2">Win %</th>
               {s.players.some((r) => r.mmr_change != null) && <th className="px-3 py-2">MMR</th>}
               {STATS.map(([k, l]) => <th key={k} className="px-3 py-2">{l}</th>)}
@@ -183,7 +187,7 @@ function StatsTab({ tid }) {
             {s.players.map((r) => (
               <tr key={r.player_id} className="border-t border-[#1B2438] text-right">
                 <td className="px-3 py-1.5 text-left"><Link to={`/players/${r.player_id}`} className="hover:text-cyan-400">{r.name}</Link></td>
-                <td className="px-3 py-1.5 text-left text-slate-400">{r.team}</td>
+                {hasTeams && <td className="px-3 py-1.5 text-left text-slate-400">{r.team}</td>}
                 <td className="px-3 py-1.5 font-mono-hud">{r.games}</td>
                 <td className="px-3 py-1.5 font-mono-hud">{r.winrate == null ? "-" : `${r.winrate}%`}</td>
                 {r.mmr_change != null && <td className={`px-3 py-1.5 font-mono-hud ${r.mmr_change > 0 ? "text-cyan-300" : r.mmr_change < 0 ? "text-[#FF2E55]" : "text-slate-400"}`}>{r.mmr_change > 0 ? "+" : ""}{r.mmr_change}</td>}
@@ -245,7 +249,8 @@ export default function TournamentView() {
   }, [id]);
 
   const hasBracket = t && (t.playoffs || t.matches.some((m) => m.stage === "playoffs"));
-  const tabs = TABS.filter((x) => (x.key !== "bracket" || hasBracket) && (x.key !== "standings" || t?.league));
+  const rotation = t?.league?.type === "rotation";   // teams change every match: no Teams tab
+  const tabs = TABS.filter((x) => (x.key !== "bracket" || hasBracket) && (x.key !== "standings" || t?.league) && (x.key !== "teams" || !rotation));
   const tab = tabs.find((x) => x.key === params.get("tab"))?.key ||
     (t && t.status === "league" ? "standings" : hasBracket ? "bracket" : "standings");
   const setTab = (k) => setParams({ tab: k });
@@ -303,7 +308,7 @@ export default function TournamentView() {
               </h1>
             )}
             <div className="text-xs font-mono-hud uppercase tracking-wider text-slate-400 flex flex-wrap gap-x-3 mt-1">
-              <span>{t.format}</span><span>{t.teams.length} teams</span>
+              <span>{t.format}</span><span>{rotation ? `${t.players.length} players` : `${t.teams.length} teams`}</span>
               {t.league && <span>{LEAGUE_NAMES[t.league.type]}{t.league.best_of > 1 ? ` (Bo${t.league.best_of})` : ""}</span>}
               {t.playoffs && <span>{PLAYOFF_NAMES[t.playoffs.type]}{t.playoffs.type === "double" && t.playoffs.grand_reset ? " + reset" : ""}</span>}
               <span title={t.counts_for_mmr ? "Each game moves MMR in the active ranked season (as a labelled adjustment); the games stay out of the ranked and unranked stats" : "Games don't change MMR"}>{t.counts_for_mmr ? "Counts for MMR" : "No MMR"}</span>

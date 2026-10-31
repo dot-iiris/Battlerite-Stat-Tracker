@@ -4765,9 +4765,10 @@ class TournamentTeamIn(BaseModel):
 
 
 class TournamentLeagueIn(BaseModel):
-    type: Literal["round_robin", "swiss", "groups"]
+    type: Literal["round_robin", "swiss", "groups", "rotation"]
     best_of: int = 1
-    rounds: Optional[int] = None       # Swiss: how many rounds (default: enough to find a winner)
+    rounds: Optional[int] = None       # Swiss: how many rounds (default: enough to find a winner); rotation: required
+    balance_mmr: bool = False          # rotation: make each round's teams even by MMR too
     groups: int = 2                    # groups: how many
     advance_per_group: int = 2         # groups: how many from each go to the playoffs
 
@@ -4785,7 +4786,8 @@ class TournamentCreate(BaseModel):
     name: str
     format: Literal["2v2", "3v3"] = "3v3"
     counts_for_mmr: bool = False       # games also move MMR in the active ranked season (stats stay separate)
-    teams: List[TournamentTeamIn]
+    teams: List[TournamentTeamIn] = []
+    players: List[str] = []            # rotation: the players (teams are made for every match)
     league: Optional[TournamentLeagueIn] = None
     playoffs: Optional[TournamentPlayoffsIn] = None
 
@@ -4898,20 +4900,30 @@ async def _drop_tournament_mmr(q: dict):
 async def _tournament_games(t: dict) -> Dict[str, list]:
     """Logged games of a tournament, by tournament match: [{winner, rounds, match_id, code, played_at}]"""
     team_of = {pid: x["id"] for x in t["teams"] for pid in x["player_ids"]}
+    rotation = _is_rotation(t)
+    if rotation:   # a player is in a different team every round: match each game to its own match's teams
+        members = {x["id"]: x["player_ids"] for x in t["teams"]}
+        team_of_match = {m["id"]: {pid: tm for tm in (m["team1"], m["team2"]) for pid in members.get(tm, [])}
+                         for m in t["matches"] if m["stage"] == "league"}
     out: Dict[str, list] = {}
     async for m in db.tournament_games.find({"tournament_id": t["id"]}, {"_id": 0, "players.stats": 0}).sort("played_at", 1):
+        mid = (m.get("tournament_match_id") or "").partition(":")[2]
+        lookup = team_of_match.get(mid, {}) if rotation else team_of
         side = {}
         for s in ("A", "B"):
-            votes = [team_of.get(p["player_id"]) for p in m["players"] if p["team"] == s]
+            votes = [lookup.get(p["player_id"]) for p in m["players"] if p["team"] == s]
             side[s] = max(set(votes), key=votes.count) if votes else None
         if not side["A"] or not side["B"] or side["A"] == side["B"]:
             continue
-        mid = (m.get("tournament_match_id") or "").partition(":")[2]
         out.setdefault(mid, []).append({
             "winner": side[m["winner_team"]], "rounds": {side["A"]: m["team_a_rounds"], side["B"]: m["team_b_rounds"]},
             "game_id": m["id"], "code": m.get("code"), "played_at": m["played_at"],
             "players": [{"player_id": p["player_id"], "champion": p["champion"], "team": side[p["team"]]} for p in m["players"]]})
     return out
+
+
+def _is_rotation(t: dict) -> bool:
+    return (t.get("league") or {}).get("type") == "rotation"
 
 
 def _league_total_rounds(t: dict) -> int:
@@ -4933,7 +4945,11 @@ async def _tournament_view(t: dict) -> dict:
     lg = t.get("league") or {}
     tables = []
     if league:
-        if lg.get("type") == "groups":
+        if lg.get("type") == "rotation":   # one table of players, named after them
+            tables.append({"group": None, "rows": T_.player_standings(t.get("players") or [], t["teams"], league, res,
+                                                                      t.get("rests") or {})})
+            names.update(t.get("player_names") or {})
+        elif lg.get("type") == "groups":
             for g, ids in (t.get("groups") or {}).items():
                 tables.append({"group": g, "rows": T_.standings(ids, [m for m in league if m.get("group") == g], res, seed_of)})
         else:
@@ -4998,6 +5014,8 @@ async def create_tournament(data: TournamentCreate, user: dict = Depends(admin_r
     if not name:
         raise HTTPException(400, "Give the tournament a name")
     size = {"2v2": 2, "3v3": 3}[data.format]
+    if data.league and data.league.type == "rotation":
+        return await _create_rotation(data, name, size, user)
     if len(data.teams) < 2:
         raise HTTPException(400, "A tournament needs at least 2 teams")
     if len(data.teams) > 64:
@@ -5057,6 +5075,46 @@ async def create_tournament(data: TournamentCreate, user: dict = Depends(admin_r
     return await _tournament_view(doc)
 
 
+ROTATION_MAX_ROUNDS = 30
+
+
+async def _create_rotation(data: TournamentCreate, name: str, size: int, user: dict) -> dict:
+    """A player rotation tournament: players instead of teams, new teams every round, league only."""
+    lg = data.league.model_dump()
+    _check_bo(lg["best_of"])
+    if data.playoffs:
+        raise HTTPException(400, "A player rotation has no playoffs - the table decides")
+    ids = list(dict.fromkeys(data.players))
+    if len(ids) < 2 * size:
+        raise HTTPException(400, f"A {data.format} rotation needs at least {2 * size} players")
+    if len(ids) > TOURNAMENT_MAX_PLAYERS:
+        raise HTTPException(400, f"At most {TOURNAMENT_MAX_PLAYERS} players")
+    if not lg["rounds"] or not 1 <= lg["rounds"] <= ROTATION_MAX_ROUNDS:
+        raise HTTPException(400, f"Rotation: between 1 and {ROTATION_MAX_ROUNDS} rounds")
+    found = {p["id"]: p["name"] for p in await db.players.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(None)}
+    missing = [pid for pid in ids if pid not in found]
+    if missing:
+        raise HTTPException(404, f"Player {missing[0]} not found")
+    mmr = None
+    if lg["balance_mmr"]:   # MMR now, in the active ranked season (everyone starts level without one)
+        season = await get_active_ranked_season()
+        mmr = {pid: (await get_player_mmr(pid, season["id"]) if season else BASE_MMR) for pid in ids}
+    teams, matches, rests = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: T_.rotation_schedule(ids, size, lg["rounds"], lg["best_of"], mmr))
+    for n, x in enumerate(teams, 1):
+        x.update(name=" + ".join(found[pid] for pid in x["player_ids"]), seed=n)
+    doc = {"id": str(uuid.uuid4())[:8], "name": name, "format": data.format, "counts_for_mmr": data.counts_for_mmr,
+           "stream_key": secrets.token_urlsafe(12), "players": ids, "player_names": found, "teams": teams,
+           "rests": rests, "league": lg, "playoffs": None, "groups": None, "matches": matches, "forfeits": {},
+           "playoff_seeds": None, "status": "league", "created_at": _now_iso(),
+           "created_by": user.get("name") or user.get("email")}
+    if mmr:
+        doc["mmr_at_start"] = {pid: round(v, 1) for pid, v in mmr.items()}
+    await db.tournaments.insert_one(doc)
+    doc.pop("_id", None)
+    return await _tournament_view(doc)
+
+
 # While tournaments are in preview, only admins see them - except a stream overlay, which can't log
 # in: its link carries the tournament's stream key.
 async def _tournament_for_viewer(tid: str, request: Request, key: Optional[str]) -> dict:
@@ -5078,7 +5136,8 @@ async def list_tournaments(user: dict = Depends(admin_required)):
         if t["status"] == "finished":
             champ = (await _tournament_view(t))["champion_name"]
         out.append({k: t.get(k) for k in ("id", "name", "format", "status", "created_at", "finished_at", "counts_for_mmr")}
-                   | {"teams": len(t["teams"]), "champion_name": champ,
+                   | {"teams": len(t["teams"]), "players": len(t["players"]) if _is_rotation(t) else None,
+                      "champion_name": champ,
                       "games": await db.tournament_games.count_documents({"tournament_id": t["id"]}),
                       "league": (t.get("league") or {}).get("type"), "playoffs": (t.get("playoffs") or {}).get("type")})
     return out
@@ -5101,7 +5160,10 @@ async def _tournament_full(t: dict) -> dict:
 @api_router.get("/tournaments/{tid}/stats")
 async def tournament_stats(tid: str, request: Request, key: Optional[str] = None):
     t = await _tournament_for_viewer(tid, request, key)
-    team_of = {pid: x["id"] for x in t["teams"] for pid in x["player_ids"]}
+    if _is_rotation(t):   # no fixed teams: everyone on the roster, no team column
+        team_of = {pid: None for pid in t.get("players") or []}
+    else:
+        team_of = {pid: x["id"] for x in t["teams"] for pid in x["player_ids"]}
     names = {p["id"]: p["name"] for p in await db.players.find({"id": {"$in": list(team_of)}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)}
     tnames = {x["id"]: x["name"] for x in t["teams"]}
     rows = {pid: {"player_id": pid, "name": names.get(pid, "?"), "team": tnames.get(team_of[pid]), "games": 0, "wins": 0,
@@ -5261,7 +5323,8 @@ async def bot_tournament_match(discord_id: str, user: dict = Depends(bot_require
     if not player:
         raise HTTPException(404, "Not linked to a player")
     best = None
-    async for t in db.tournaments.find({"status": {"$in": ["league", "playoffs"]}, "teams.player_ids": player["id"]}, {"_id": 0}):
+    async for t in db.tournaments.find({"status": {"$in": ["league", "playoffs"]}, "teams.player_ids": player["id"],
+                                        "league.type": {"$ne": "rotation"}}, {"_id": 0}):   # rotations: website only
         team = next(x for x in t["teams"] if player["id"] in x["player_ids"])
         view = await _tournament_view(t)
         for n, m in enumerate(view["matches"]):
