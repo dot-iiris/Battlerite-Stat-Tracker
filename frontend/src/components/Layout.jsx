@@ -1,7 +1,8 @@
-import { Link, NavLink, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { prefetchPage } from "@/api";
 import { useAuth } from "@/AuthContext";
-import { EyeOff, ShieldCheck, Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle, Settings2, Shuffle, Award, Map as MapIcon } from "lucide-react";
+import { EyeOff, ShieldCheck, Swords, Trophy, Users, Grid3x3, Sliders, Calendar, LayoutDashboard, PlusCircle, LogOut, Flame, FileBarChart2, Eye, Inbox, UserCircle, Settings2, Shuffle, Award, Map as MapIcon, Menu, X } from "lucide-react";
 
 const links = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
@@ -24,10 +25,17 @@ const links = [
 export default function Layout({ children }) {
   const { user, logout, isAdmin, isGuest, isRealAdmin, viewAsUser, setViewAsUser } = useAuth();
   const nav = useNavigate();
+  const location = useLocation();
+  // phones: the menu links are folded away until opened, so the header doesn't eat the screen
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => { setMenuOpen(false); }, [location.pathname]);
 
   const visibleLinks = links.filter((l) => (!l.adminOnly || isAdmin) && (!l.discordOnly || user?.discord_id));
   const mainLinks = visibleLinks.filter((l) => !l.adminOnly);
   const adminLinks = visibleLinks.filter((l) => l.adminOnly);
+  const current = [...visibleLinks].sort((a, b) => b.to.length - a.to.length)
+    .find((l) => (l.to === "/" ? location.pathname === "/" : location.pathname.startsWith(l.to)));
+  const menuCls = menuOpen ? "" : "hidden md:block";
 
   const tab = (l) => (
     <NavLink
@@ -59,7 +67,7 @@ export default function Layout({ children }) {
             <img src="/logo.png" alt="BR Stats" className="w-8 h-8 object-contain" />
             <div>
               <div className="font-heading text-lg font-black uppercase tracking-tight leading-none">BR <span className="text-cyan-400">Stats</span></div>
-              <div className="text-[10px] font-mono-hud text-slate-500 uppercase tracking-[0.2em] leading-none mt-0.5">Battlerite Tracker</div>
+              <div className="hidden sm:block text-[10px] font-mono-hud text-slate-500 uppercase tracking-[0.2em] leading-none mt-0.5">Battlerite Tracker</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -101,11 +109,17 @@ export default function Layout({ children }) {
               className="flex items-center gap-2 px-3 py-1.5 text-xs font-mono-hud uppercase tracking-wider text-slate-300 border border-[#1B2438] hover:border-crimson-500 hover:text-[#FF2E55] rounded transition-colors"
               data-testid="nav-logout"
             >
-              <LogOut className="w-3.5 h-3.5" /> {isGuest ? "Exit" : "Logout"}
+              <LogOut className="w-3.5 h-3.5" /> <span className="hidden sm:inline">{isGuest ? "Exit" : "Logout"}</span>
+            </button>
+            <button type="button" onClick={() => setMenuOpen((o) => !o)} data-testid="nav-menu-toggle"
+              aria-expanded={menuOpen} aria-label={menuOpen ? "Close menu" : "Open menu"}
+              className="md:hidden flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono-hud uppercase tracking-wider text-cyan-400 border border-cyan-400/30 hover:border-cyan-400 rounded transition-colors">
+              {menuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+              <span className="max-w-[6.5rem] truncate">{menuOpen ? "Close" : current?.label || "Menu"}</span>
             </button>
           </div>
         </div>
-        <nav className="border-t border-[#1B2438]">
+        <nav className={`border-t border-[#1B2438] ${menuCls}`}>
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap gap-x-1">
             {mainLinks.map(tab)}
           </div>
@@ -121,7 +135,7 @@ export default function Layout({ children }) {
           </div>
         )}
         {adminLinks.length > 0 && (
-          <nav className="border-t border-[#1B2438] bg-[#FFB800]/[0.03]" data-testid="nav-admin">
+          <nav className={`border-t border-[#1B2438] bg-[#FFB800]/[0.03] ${menuCls}`} data-testid="nav-admin">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap items-center gap-x-1">
               <span className="pr-2 text-[10px] font-mono-hud uppercase tracking-[0.2em] text-[#FFB800]/70">Admin</span>
               {adminLinks.map(tab)}
