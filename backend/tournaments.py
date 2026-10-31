@@ -309,6 +309,36 @@ def champion(matches: List[dict], res: Dict[str, dict]) -> Optional[str]:
     return r["winner"] if r and r["done"] else None
 
 
+def playoff_places(matches: List[dict], res: Dict[str, dict]) -> Dict[str, int]:
+    """Top-3 places a finished bracket decides: {team id: 1 | 2 | 3}. Single elimination has no
+    third-place match, so both semifinal losers are 3rd; double elimination's 3rd is the Losers Final
+    loser. Byes and undecided spots are left out."""
+    champ = champion(matches, res)
+    if not champ:
+        return {}
+    po = [m for m in matches if m["stage"] == "playoffs"]
+    out = {champ: 1}
+
+    def put(team, place):
+        if team and team != BYE and team not in out:
+            out[team] = place
+
+    if any(m["id"] == "P-GF" for m in po):
+        gf2 = res.get("P-GF2")
+        final = gf2 if gf2 and gf2["status"] not in ("waiting", "not needed") else res.get("P-GF")
+        put(final and final["loser"], 2)
+        losers = [m for m in po if m["bracket"] == "L"]
+        if losers:
+            put(res[max(losers, key=lambda m: m["round"])["id"]]["loser"], 3)
+    else:
+        put(res[po[-1]["id"]]["loser"], 2)
+        last = max(m["round"] for m in po)
+        for m in po:
+            if m["round"] == last - 1:
+                put(res[m["id"]]["loser"], 3)
+    return out
+
+
 def standings(team_ids: List[str], league: List[dict], res: Dict[str, dict], seed_of: Dict[str, int],
               swiss: bool = False) -> List[dict]:
     """League table: series wins first, then (Swiss) opponents' wins, game difference, round difference, seed."""
