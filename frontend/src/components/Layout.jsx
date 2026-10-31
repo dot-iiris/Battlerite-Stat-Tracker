@@ -15,7 +15,7 @@ const links = [
   { to: "/matchmaking", label: "Matchmaking", icon: Sliders, testid: "nav-matchmaking" },
   { to: "/recap", label: "Recap", icon: FileBarChart2, testid: "nav-recap" },
   { to: "/seasons", label: "Seasons", icon: Calendar, testid: "nav-seasons" },
-  { to: "/tournaments", label: "Tournaments", icon: Award, testid: "nav-tournaments", adminOnly: true },   // admin preview for now
+  { to: "/tournaments", label: "Tournaments", icon: Award, testid: "nav-tournaments" },
   { to: "/tournament", label: "Make Teams", icon: Shuffle, testid: "nav-tournament", adminOnly: true },
   { to: "/maps", label: "Map Draft", icon: MapIcon, testid: "nav-maps", adminOnly: true },   // admin preview for now
   { to: "/settings", label: "Settings", icon: Settings2, testid: "nav-settings", adminOnly: true },

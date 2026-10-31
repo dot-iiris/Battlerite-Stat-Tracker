@@ -4928,10 +4928,18 @@ async def _tournament_games(t: dict) -> Dict[str, list]:
             side[s] = max(set(votes), key=votes.count) if votes else None
         if not side["A"] or not side["B"] or side["A"] == side["B"]:
             continue
+        mmr = m.get("mmr_changes") or {}
         out.setdefault(mid, []).append({
             "winner": side[m["winner_team"]], "rounds": {side["A"]: m["team_a_rounds"], side["B"]: m["team_b_rounds"]},
             "game_id": m["id"], "code": m.get("code"), "played_at": m["played_at"], "screenshot_id": m.get("screenshot_id"),
-            "players": [{"player_id": p["player_id"], "champion": p["champion"], "team": side[p["team"]]} for p in m["players"]]})
+            # the game as logged (sides A/B), so it can be shown like a match on the Matches tab
+            "sides": side, "team_a_rounds": m["team_a_rounds"], "team_b_rounds": m["team_b_rounds"],
+            "winner_team": m["winner_team"], "format": m.get("format"), "map": m.get("map"),
+            "source": m.get("source"), "source_ref": m.get("source_ref"),
+            "players": [{"player_id": p["player_id"], "champion": p["champion"], "role": p.get("role"),
+                         "team": side[p["team"]], "side": p["team"],
+                         "elo_delta": round(mmr[p["player_id"]], 1) if p["player_id"] in mmr else None}
+                        for p in m["players"]]})
     return out
 
 
@@ -5081,7 +5089,7 @@ async def create_tournament(data: TournamentCreate, user: dict = Depends(admin_r
     doc = {"id": str(uuid.uuid4())[:8], "name": name, "format": data.format, "counts_for_mmr": data.counts_for_mmr,
            "stream_key": secrets.token_urlsafe(12), "teams": teams, "league": lg, "playoffs": po,
            "groups": groups, "matches": matches, "forfeits": {}, "playoff_seeds": None if lg else order,
-           "status": "league" if lg else "playoffs", "created_at": _now_iso(),
+           "status": "league" if lg else "playoffs", "created_at": _now_iso(), "visible": False,
            "created_by": user.get("name") or user.get("email")}
     await db.tournaments.insert_one(doc)
     doc.pop("_id", None)
@@ -5119,7 +5127,7 @@ async def _create_rotation(data: TournamentCreate, name: str, size: int, user: d
     doc = {"id": str(uuid.uuid4())[:8], "name": name, "format": data.format, "counts_for_mmr": data.counts_for_mmr,
            "stream_key": secrets.token_urlsafe(12), "players": ids, "player_names": found, "teams": teams,
            "rests": rests, "league": lg, "playoffs": None, "groups": None, "matches": matches, "forfeits": {},
-           "playoff_seeds": None, "status": "league", "created_at": _now_iso(),
+           "playoff_seeds": None, "status": "league", "created_at": _now_iso(), "visible": False,
            "created_by": user.get("name") or user.get("email")}
     if mmr:
         doc["mmr_at_start"] = {pid: round(v, 1) for pid, v in mmr.items()}
@@ -5128,27 +5136,34 @@ async def _create_rotation(data: TournamentCreate, name: str, size: int, user: d
     return await _tournament_view(doc)
 
 
-# While tournaments are in preview, only admins see them - except a stream overlay, which can't log
-# in: its link carries the tournament's stream key.
-async def _tournament_for_viewer(tid: str, request: Request, key: Optional[str]) -> dict:
+# A tournament starts hidden: only admins see it until one makes it visible. Then anyone logged in
+# can follow it. A stream overlay can't log in: its link carries the tournament's stream key.
+async def _tournament_for_viewer(tid: str, request: Request, key: Optional[str]) -> tuple:
+    """-> (tournament, viewer is an admin or holds the stream key)"""
     t = await _tournament_or_404(tid)
     if key and t.get("stream_key") and secrets.compare_digest(key, t["stream_key"]):
-        return t
+        return t, True
     try:
-        await admin_required(request)
+        user = await get_current_user(request)
     except HTTPException:
         raise HTTPException(404, "Tournament not found")
-    return t
+    if user.get("role") == "admin":
+        return t, True
+    if not t.get("visible"):
+        raise HTTPException(404, "Tournament not found")
+    return t, False
 
 
 @api_router.get("/tournaments")
-async def list_tournaments(user: dict = Depends(admin_required)):
+async def list_tournaments(user: dict = Depends(get_current_user)):
     out = []
-    async for t in db.tournaments.find({}, {"_id": 0}).sort("created_at", -1):
+    q = {} if user.get("role") == "admin" else {"visible": True}
+    async for t in db.tournaments.find(q, {"_id": 0}).sort("created_at", -1):
         champ = None
         if t["status"] == "finished":
             champ = (await _tournament_view(t))["champion_name"]
         out.append({k: t.get(k) for k in ("id", "name", "format", "status", "created_at", "finished_at", "counts_for_mmr")}
+                   | {"visible": bool(t.get("visible"))}
                    | {"teams": len(t["teams"]), "players": len(t["players"]) if _is_rotation(t) else None,
                       "champion_name": champ,
                       "games": await db.tournament_games.count_documents({"tournament_id": t["id"]}),
@@ -5158,7 +5173,11 @@ async def list_tournaments(user: dict = Depends(admin_required)):
 
 @api_router.get("/tournaments/{tid}")
 async def get_tournament(tid: str, request: Request, key: Optional[str] = None):
-    return await _tournament_full(await _tournament_for_viewer(tid, request, key))
+    t, insider = await _tournament_for_viewer(tid, request, key)
+    view = await _tournament_full(t)
+    if not insider:   # players don't get the stream overlay key
+        view.pop("stream_key", None)
+    return view
 
 
 async def _tournament_full(t: dict) -> dict:
@@ -5167,12 +5186,13 @@ async def _tournament_full(t: dict) -> dict:
         {"id": {"$in": [pid for x in t["teams"] for pid in x["player_ids"]]}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)}
     for x in view["teams"]:
         x["players"] = [{"id": pid, "name": pnames.get(pid, "?")} for pid in x["player_ids"]]
+    view["visible"] = bool(t.get("visible"))
     return view
 
 
 @api_router.get("/tournaments/{tid}/stats")
 async def tournament_stats(tid: str, request: Request, key: Optional[str] = None):
-    t = await _tournament_for_viewer(tid, request, key)
+    t, _ = await _tournament_for_viewer(tid, request, key)
     if _is_rotation(t):   # no fixed teams: everyone on the roster, no team column
         team_of = {pid: None for pid in t.get("players") or []}
     else:
@@ -5219,9 +5239,20 @@ async def tournament_stats(tid: str, request: Request, key: Optional[str] = None
 STAT_FIELDS_ALL = ("score", "damage", "protection", "disables")
 
 
+@api_router.get("/tournaments/{tid}/games/{gid}/stats")
+async def tournament_game_stats(tid: str, gid: str, request: Request, key: Optional[str] = None):
+    """One game's scoreboard, worked out like a logged match's (/matches/{id}/stats)."""
+    await _tournament_for_viewer(tid, request, key)
+    game = await db.tournament_games.find_one({"id": gid, "tournament_id": tid}, {"_id": 0})
+    if not game:
+        raise HTTPException(404, "Game not found")
+    return normalize_match_stats(game)
+
+
 class TournamentEdit(BaseModel):
     name: Optional[str] = None
     team_names: Optional[Dict[str, str]] = None
+    visible: Optional[bool] = None   # players can see it
 
 
 @api_router.patch("/tournaments/{tid}")
@@ -5239,6 +5270,8 @@ async def edit_tournament(tid: str, data: TournamentEdit, user: dict = Depends(a
         if len({x["name"].lower() for x in teams}) != len(teams):
             raise HTTPException(400, "Two teams would have the same name")
         upd["teams"] = teams
+    if data.visible is not None:
+        upd["visible"] = data.visible
     if upd:
         await db.tournaments.update_one({"id": tid}, {"$set": upd})
     return await _tournament_full(await _tournament_or_404(tid))

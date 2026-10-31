@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import api from "@/api";
 import { toast } from "sonner";
-import { Award, Plus, ChevronUp, ChevronDown, Download, Trophy, X } from "lucide-react";
+import { Award, Plus, ChevronUp, ChevronDown, Download, Trophy, X, EyeOff } from "lucide-react";
 import { useAuth } from "@/AuthContext";
 import { LEAGUE_NAMES, PLAYOFF_NAMES } from "@/components/TournamentParts";
 
@@ -310,7 +310,7 @@ function CreateForm({ onDone, autoImport }) {
   );
 }
 
-function Section({ title, items, empty, testid }) {
+function Section({ title, items, empty, testid, showHidden }) {
   return (
     <section className="space-y-3" data-testid={testid}>
       <h2 className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70">{title}</h2>
@@ -328,6 +328,7 @@ function Section({ title, items, empty, testid }) {
                   {t.playoffs && <span>{PLAYOFF_NAMES[t.playoffs]}</span>}
                   <span>{t.games} game{t.games === 1 ? "" : "s"}</span>
                   {t.counts_for_mmr && <span className="text-cyan-400">Counts for MMR</span>}
+                  {showHidden && !t.visible && <span className="text-[#FFB800] inline-flex items-center gap-1" title="Only admins can see it - open it to show it to players"><EyeOff className="w-3 h-3" /> Hidden</span>}
                 </div>
                 <div className={`text-sm mt-1 ${t.status === "finished" ? "text-[#FFB800]" : "text-cyan-300"}`}>
                   {t.status === "finished" ? <><Trophy className="inline w-3.5 h-3.5 mr-1" />{t.champion_name || "Finished"}</> : STATUS[t.status]}
@@ -348,6 +349,7 @@ export default function Tournaments() {
   const [list, setList] = useState(null);
   const creating = isAdmin && params.get("new") === "1";
   const load = () => api.get("/tournaments").then((r) => setList(r.data)).catch(() => setList([]));
+  const shown = list && (isAdmin ? list : list.filter((t) => t.visible));   // "view as user" sees what players do
   useEffect(() => { load(); }, []);
 
   return (
@@ -356,7 +358,7 @@ export default function Tournaments() {
         <div>
           <div className="text-xs font-mono-hud uppercase tracking-[0.3em] text-cyan-400/70 mb-2">// Competitions</div>
           <h1 className="font-heading text-4xl sm:text-5xl font-black uppercase tracking-tight">Tournaments</h1>
-          <p className="text-sm text-slate-400 mt-2 max-w-3xl">Admin preview - only admins can see tournaments for now. Each one keeps its own games and stats, separate from ranked and unranked.</p>
+          <p className="text-sm text-slate-400 mt-2 max-w-3xl">Each one keeps its own games and stats, separate from ranked and unranked.{isAdmin ? " A new tournament is hidden from players until you make it visible on its page." : ""}</p>
         </div>
         {isAdmin && (
           <button onClick={() => setParams(creating ? {} : { new: "1" })} data-testid="tour-new"
@@ -368,14 +370,14 @@ export default function Tournaments() {
 
       {creating && <CreateForm onDone={load} autoImport={params.get("import") === "1"} />}
 
-      {list === null ? (
+      {shown === null ? (
         <div className="text-sm text-slate-500">Loading…</div>
-      ) : list.length === 0 ? (
+      ) : shown.length === 0 ? (
         <div className="hud-card p-8 text-center text-slate-400">No tournaments yet.</div>
       ) : (
         <>
-          <Section title="Current" items={list.filter((t) => t.status !== "finished")} empty="Nothing running right now." testid="tour-current" />
-          <Section title="Past tournaments" items={list.filter((t) => t.status === "finished")} empty="No finished tournaments yet." testid="tour-past" />
+          <Section title="Current" items={shown.filter((t) => t.status !== "finished")} empty="Nothing running right now." testid="tour-current" showHidden={isAdmin} />
+          <Section title="Past tournaments" items={shown.filter((t) => t.status === "finished")} empty="No finished tournaments yet." testid="tour-past" showHidden={isAdmin} />
         </>
       )}
     </div>
