@@ -5,7 +5,8 @@ import { useAuth } from "@/AuthContext";
 import { Zap, Eye } from "lucide-react";
 import { toast } from "sonner";
 
-export default function Login() {
+// The email/password (admin) form only shows at /admin-login - a direct link, not linked from the site.
+export default function Login({ adminForm = false }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -69,14 +70,17 @@ export default function Login() {
               <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor" aria-hidden="true"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.6 1.3a18.3 18.3 0 0 0-5.6 0L8.6 3a19.7 19.7 0 0 0-4.9 1.5C.6 9.1-.3 13.6.1 18a19.9 19.9 0 0 0 6 3l1.3-2a12.9 12.9 0 0 1-2-1l.5-.4a14.2 14.2 0 0 0 12.2 0l.5.4c-.6.4-1.3.7-2 1l1.3 2a19.8 19.8 0 0 0 6-3c.5-5.1-.8-9.6-3.6-13.6ZM8 15.3c-1.2 0-2.2-1.1-2.2-2.4s1-2.4 2.2-2.4 2.2 1.1 2.2 2.4-1 2.4-2.2 2.4Zm8 0c-1.2 0-2.2-1.1-2.2-2.4s1-2.4 2.2-2.4 2.2 1.1 2.2 2.4-1 2.4-2.2 2.4Z"/></svg>
               Log in with Discord
             </a>
-            <div className="flex items-center gap-3 my-5">
-              <div className="h-px flex-1 bg-[#1B2438]" />
-              <span className="text-[10px] font-mono-hud uppercase tracking-[0.25em] text-slate-500">admin login</span>
-              <div className="h-px flex-1 bg-[#1B2438]" />
-            </div>
+            {adminForm && (
+              <div className="flex items-center gap-3 my-5">
+                <div className="h-px flex-1 bg-[#1B2438]" />
+                <span className="text-[10px] font-mono-hud uppercase tracking-[0.25em] text-slate-500">admin login</span>
+                <div className="h-px flex-1 bg-[#1B2438]" />
+              </div>
+            )}
           </>
         )}
 
+        {adminForm && (
         <form onSubmit={submit} className="space-y-4 relative z-10">
           <div>
             <label className="block text-xs font-mono-hud uppercase tracking-[0.2em] text-cyan-400/80 mb-1.5">Email</label>
@@ -110,12 +114,15 @@ export default function Login() {
             {loading ? "Authenticating..." : "Initiate Session"}
           </button>
         </form>
+        )}
 
-        <div className="flex items-center gap-3 my-5">
-          <div className="h-px flex-1 bg-[#1B2438]" />
-          <span className="text-[10px] font-mono-hud uppercase tracking-[0.25em] text-slate-500">or</span>
-          <div className="h-px flex-1 bg-[#1B2438]" />
-        </div>
+        {(discordEnabled || adminForm) && (
+          <div className="flex items-center gap-3 my-5">
+            <div className="h-px flex-1 bg-[#1B2438]" />
+            <span className="text-[10px] font-mono-hud uppercase tracking-[0.25em] text-slate-500">or</span>
+            <div className="h-px flex-1 bg-[#1B2438]" />
+          </div>
+        )}
 
         <button
           type="button"

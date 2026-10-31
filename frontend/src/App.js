@@ -55,6 +55,7 @@ function App() {
         <Suspense fallback={<PageLoading />}>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/admin-login" element={<Login adminForm />} />
           <Route path="/" element={<Protected><Dashboard /></Protected>} />
           <Route path="/matches" element={<Protected><Matches /></Protected>} />
           <Route path="/log" element={<Protected adminOnly><LogMatch /></Protected>} />
