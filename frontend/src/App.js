@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/AuthContext";
 import Layout from "@/components/Layout";
@@ -34,6 +34,7 @@ const PageLoading = () => (
 
 function Protected({ children, adminOnly }) {
   const { user, loading, isAdmin } = useAuth();
+  const location = useLocation();
   if (loading || user === null) {
     return (
       <div className="min-h-screen bg-[#06080E] flex items-center justify-center text-cyan-400 font-mono-hud text-sm uppercase tracking-[0.3em]">
@@ -41,7 +42,11 @@ function Protected({ children, adminOnly }) {
       </div>
     );
   }
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) {
+    // remember the page they asked for, so logging in (or "show me the stats") lands back on it
+    const next = location.pathname + location.search + location.hash;
+    return <Navigate to={next === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`} replace />;
+  }
   if (adminOnly && !isAdmin) return <Navigate to="/" replace />;
   return <Layout><Suspense fallback={<PageLoading />}>{children}</Suspense></Layout>;
 }
