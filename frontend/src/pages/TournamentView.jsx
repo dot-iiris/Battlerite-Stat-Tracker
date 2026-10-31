@@ -4,7 +4,7 @@ import api, { API } from "@/api";
 import { toast } from "sonner";
 import { ArrowLeft, Copy, Eye, EyeOff, Flag, Image as ImageIcon, Pencil, PlayCircle, PlusCircle, Trash2, Trophy, Tv, Check, X, SkipForward } from "lucide-react";
 import { useAuth } from "@/AuthContext";
-import MatchList from "@/components/MatchList";
+import MatchCard from "@/components/MatchCard";
 import { Bracket, Standings, StatusChip, matchNames, rotationMembers, stageText, LEAGUE_NAMES, PLAYOFF_NAMES } from "@/components/TournamentParts";
 
 const TABS = [
@@ -17,7 +17,7 @@ const TABS = [
 const btn = "flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono-hud uppercase tracking-wider border rounded transition-colors";
 const errText = (err, fallback) => err?.response?.data?.detail || fallback;
 
-// A tournament game shaped like a logged match, for MatchList / MatchDetails (sides A/B as it was entered)
+// A tournament game shaped like a logged match, for MatchCard (sides A/B as it was entered)
 const gameAsMatch = (g, n) => ({
   id: g.game_id, n, game: g, format: g.format, played_at: g.played_at, map: g.map, source: g.source,
   source_ref: g.source_ref, team_a_rounds: g.team_a_rounds, team_b_rounds: g.team_b_rounds, winner_team: g.winner_team,
@@ -38,6 +38,7 @@ function MatchRow({ t, m, names, isAdmin, act, highlight, members, playerName })
     return <span className={`truncate ${cls}`}>{m[`team${n}_name`] || "TBD"}</span>;
   };
   const games = (m.game_list || []).map((g, i) => gameAsMatch(g, i + 1));
+  const [openGame, setOpenGame] = useState(null);
   return (
     <div id={`tm-${m.id}`} className={`bg-[#121828]/40 rounded border p-3 space-y-2 ${highlight ? "border-cyan-400" : "border-[#1B2438]"}`} data-testid={`tmatch-${m.id}`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -70,28 +71,35 @@ function MatchRow({ t, m, names, isAdmin, act, highlight, members, playerName })
         )}
       </div>
       {games.length > 0 && (
-        // each game like a match on the Champions / player pages: both line-ups, opens to the full scoreboard
-        <MatchList matches={games} playerName={playerName} limit={games.length} showAllButton={false} testid={`tgame-${m.id}`}
-          detailsProps={(gm) => ({
-            editable: false,
-            statsPath: `/tournaments/${t.id}/games/${gm.id}/stats`,
-            screenshotUrl: gm.game.screenshot_id ? `${API}/screenshots/${gm.game.screenshot_id}` : null,
-            teamNames: { A: teamName(gm.game.sides?.A), B: teamName(gm.game.sides?.B) },
-            showMmr: !!t.counts_for_mmr && gm.players.some((p) => p.elo_delta != null),
-          })}
-          rowExtra={(gm) => (
-            <span className="flex items-center gap-2">
-              {games.length > 1 && <span className="uppercase tracking-wider text-slate-400">Game {gm.n}</span>}
-              {gm.game.screenshot_id && (
-                <a href={`${API}/screenshots/${gm.game.screenshot_id}`} target="_blank" rel="noreferrer" title="Open the scoreboard screenshot"
-                  className="text-slate-500 hover:text-cyan-400" aria-label="Screenshot" data-testid={`tgame-shot-${gm.id}`}><ImageIcon className="w-3.5 h-3.5" /></a>
-              )}
-              {isAdmin && (
-                <button type="button" onClick={() => window.confirm(`Delete game ${gm.n} of this series?`) && act(`/tournaments/${t.id}/games/${gm.id}`, null, "Game deleted", "delete")}
-                  className="text-slate-600 hover:text-[#FF2E55]" aria-label="Delete game" data-testid={`tgame-del-${gm.id}`}><Trash2 className="w-3.5 h-3.5" /></button>
-              )}
-            </span>
-          )} />
+        // each game like a match in Match History (no MMR changes), opening to the full scoreboard
+        <div className="space-y-3">
+          {games.map((gm) => (
+            <MatchCard key={gm.id} match={gm} playerName={playerName} open={openGame === gm.id} testid="tgame"
+              onToggle={() => setOpenGame(openGame === gm.id ? null : gm.id)} showMmr={false}
+              teamNames={members ? null : { A: teamName(gm.game.sides?.A), B: teamName(gm.game.sides?.B) }}
+              detailsProps={{
+                editable: false,
+                statsPath: `/tournaments/${t.id}/games/${gm.id}/stats`,
+                screenshotUrl: gm.game.screenshot_id ? `${API}/screenshots/${gm.game.screenshot_id}` : null,
+              }}
+              tags={<>
+                {games.length > 1 && <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] text-cyan-400">Game {gm.n}</span>}
+                <span className="text-[10px] font-mono-hud uppercase tracking-[0.15em] px-2 py-1 bg-[#0C101B] border border-[#1B2438] rounded">{gm.format || t.format}</span>
+                <span className="text-[10px] font-mono-hud uppercase text-slate-500">{new Date(gm.played_at).toLocaleString()}</span>
+                {gm.map && <span className="text-[10px] font-mono-hud uppercase text-slate-500">{gm.map}</span>}
+              </>}
+              actions={<>
+                {gm.game.screenshot_id && (
+                  <a href={`${API}/screenshots/${gm.game.screenshot_id}`} target="_blank" rel="noreferrer" title="Open the scoreboard screenshot"
+                    className="text-slate-500 hover:text-cyan-400 p-1" aria-label="Screenshot" data-testid={`tgame-shot-${gm.id}`}><ImageIcon className="w-3.5 h-3.5" /></a>
+                )}
+                {isAdmin && (
+                  <button type="button" onClick={() => window.confirm(`Delete game ${gm.n} of this series?`) && act(`/tournaments/${t.id}/games/${gm.id}`, null, "Game deleted", "delete")}
+                    className="text-slate-500 hover:text-[#FF2E55] p-1" aria-label="Delete game" data-testid={`tgame-del-${gm.id}`}><Trash2 className="w-3.5 h-3.5" /></button>
+                )}
+              </>} />
+          ))}
+        </div>
       )}
     </div>
   );
