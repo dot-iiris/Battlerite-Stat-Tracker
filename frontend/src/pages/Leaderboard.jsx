@@ -17,6 +17,7 @@ export default function Leaderboard() {
   const [seasons, setSeasons] = useState([]);
   const [seasonId, setSeasonId] = useState("");
   const [format, setFormat] = useState("all");
+  const [sortBy, setSortBy] = useState("rank"); // "rank" (MMR) or "games" (most played first)
 
   useEffect(() => {
     (async () => {
@@ -35,6 +36,11 @@ export default function Leaderboard() {
     if (format !== "all") params.format = format;
     api.get("/stats/leaderboard", { params }).then((r) => setRows(r.data));
   }, [seasonId, format]);
+
+  // Rank numbers stay the MMR rank; sorting by games just reorders the rows
+  const shown = sortBy === "games"
+    ? [...rows].sort((a, b) => b.matches - a.matches || a.rank - b.rank)
+    : rows;
 
   const csvHref = `${process.env.REACT_APP_BACKEND_URL}/api/exports/leaderboard.csv?season_id=${seasonId}${format !== "all" ? `&format=${format}` : ""}`;
 
@@ -126,18 +132,26 @@ export default function Leaderboard() {
           <table className="w-full text-sm">
             <thead className="bg-[#121828] border-b border-[#1B2438]">
               <tr className="text-left">
-                <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80">Rank</th>
+                <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80">
+                  <button type="button" onClick={() => setSortBy("rank")} title="Sort by MMR rank"
+                    className={`uppercase tracking-[0.15em] hover:text-cyan-300 ${sortBy === "rank" ? "text-cyan-300 underline underline-offset-4" : ""}`}
+                    data-testid="leaderboard-sort-rank">Rank</button>
+                </th>
                 <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80">Player</th>
                 <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80">Tier</th>
                 <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right">MMR</th>
                 <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right hidden md:table-cell">Peak</th>
-                <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right">W-L</th>
+                <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right">
+                  <button type="button" onClick={() => setSortBy(sortBy === "games" ? "rank" : "games")} title="Sort by games played"
+                    className={`uppercase tracking-[0.15em] hover:text-cyan-300 ${sortBy === "games" ? "text-cyan-300 underline underline-offset-4" : ""}`}
+                    data-testid="leaderboard-sort-games">W-L (Games)</button>
+                </th>
                 <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right">WR%</th>
                 <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right hidden md:table-cell">Rounds ±</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {shown.map((r) => {
                 const t = tier(r.mmr);
                 return (
                   <tr key={r.player_id} className="border-b border-[#1B2438]/60 hover:bg-[#121828]/60 transition-colors" data-testid={`leaderboard-row-${r.player_id}`}>
@@ -146,7 +160,7 @@ export default function Leaderboard() {
                     <td className="px-4 py-3"><span className={`text-[10px] font-mono-hud uppercase tracking-wider px-2 py-1 border rounded ${t.color} ${t.border}`}>{t.name}</span></td>
                     <td className="px-4 py-3 text-right font-mono-hud font-bold text-cyan-400">{Math.round(r.mmr)}</td>
                     <td className="px-4 py-3 text-right font-mono-hud text-slate-400 hidden md:table-cell">{Math.round(r.peak_mmr)}</td>
-                    <td className="px-4 py-3 text-right font-mono-hud text-slate-300">{r.wins}-{r.losses}</td>
+                    <td className="px-4 py-3 text-right font-mono-hud text-slate-300">{r.wins}-{r.losses} <span className="text-slate-500">({r.matches})</span></td>
                     <td className="px-4 py-3 text-right font-mono-hud text-[#00E676]">{r.winrate}%</td>
                     <td className="px-4 py-3 text-right font-mono-hud text-slate-400 hidden md:table-cell">{r.rounds_won - r.rounds_lost >= 0 ? "+" : ""}{r.rounds_won - r.rounds_lost}</td>
                   </tr>
