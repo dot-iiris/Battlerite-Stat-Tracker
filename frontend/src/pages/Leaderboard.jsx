@@ -147,7 +147,7 @@ export default function Leaderboard() {
                     data-testid="leaderboard-sort-games">W-L (Games)</button>
                 </th>
                 <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right">WR%</th>
-                <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right hidden md:table-cell">Rounds ±</th>
+                <th className="px-4 py-3 font-mono-hud text-xs uppercase tracking-[0.15em] text-cyan-400/80 text-right hidden md:table-cell" title="Average round difference per game (rounds won minus rounds lost, divided by games played)">Avg Rounds ±</th>
               </tr>
             </thead>
             <tbody>
@@ -162,7 +162,10 @@ export default function Leaderboard() {
                     <td className="px-4 py-3 text-right font-mono-hud text-slate-400 hidden md:table-cell">{Math.round(r.peak_mmr)}</td>
                     <td className="px-4 py-3 text-right font-mono-hud text-slate-300">{r.wins}-{r.losses} <span className="text-slate-500">({r.matches})</span></td>
                     <td className="px-4 py-3 text-right font-mono-hud text-[#00E676]">{r.winrate}%</td>
-                    <td className="px-4 py-3 text-right font-mono-hud text-slate-400 hidden md:table-cell">{r.rounds_won - r.rounds_lost >= 0 ? "+" : ""}{r.rounds_won - r.rounds_lost}</td>
+                    <td className="px-4 py-3 text-right font-mono-hud text-slate-400 hidden md:table-cell">{(() => {
+                      const avg = r.matches ? (r.rounds_won - r.rounds_lost) / r.matches : 0;
+                      return `${avg > 0 ? "+" : ""}${avg.toFixed(2)}`;
+                    })()}</td>
                   </tr>
                 );
               })}
