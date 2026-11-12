@@ -12,6 +12,7 @@ const Matches = lazy(PAGE_LOADERS["/matches"]);
 const Leaderboard = lazy(PAGE_LOADERS["/leaderboard"]);
 const Players = lazy(PAGE_LOADERS["/players"]);
 const PlayerProfile = lazy(PAGE_LOADERS["/players/:id"]);
+const PlayerChampions = lazy(PAGE_LOADERS["/players/:id/champions"]);
 const Matrix = lazy(PAGE_LOADERS["/matrix"]);
 const ChampionMatrix = lazy(PAGE_LOADERS["/champions"]);
 const ChampionProfile = lazy(PAGE_LOADERS["/champions/:name"]);
@@ -69,6 +70,7 @@ function App() {
           <Route path="/leaderboard" element={<Protected><Leaderboard /></Protected>} />
           <Route path="/players" element={<Protected><Players /></Protected>} />
           <Route path="/players/:id" element={<Protected><PlayerProfile /></Protected>} />
+          <Route path="/players/:id/champions" element={<Protected><PlayerChampions /></Protected>} />
           <Route path="/matrix" element={<Protected><Matrix /></Protected>} />
           <Route path="/champions" element={<Protected><ChampionMatrix /></Protected>} />
           <Route path="/champions/:name" element={<Protected><ChampionProfile /></Protected>} />

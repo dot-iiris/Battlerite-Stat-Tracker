@@ -163,11 +163,18 @@ export default function PlayerProfile() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="hud-card p-5">
-          <h3 className="font-heading text-lg font-bold uppercase mb-4 flex items-center gap-2"><Flame className="w-4 h-4 text-[#FFB800]" /> Champion Pool</h3>
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <Link to={`/players/${id}/champions`} className="font-heading text-lg font-bold uppercase flex items-center gap-2 hover:text-cyan-400" data-testid="profile-champion-pool-link">
+              <Flame className="w-4 h-4 text-[#FFB800]" /> Champion Pool
+            </Link>
+            <Link to={`/players/${id}/champions`} className="text-xs font-mono-hud uppercase tracking-wider text-cyan-400 hover:text-cyan-300">
+              Detailed stats →
+            </Link>
+          </div>
           {stats.champions.length === 0 ? <div className="text-slate-500 text-sm font-mono-hud">No matches yet.</div> : (
             <div className="space-y-2">
               {stats.champions.slice(0, 8).map((c) => (
-                <Link key={c.champion} to={`/champions/${encodeURIComponent(c.champion)}`} className="group flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
+                <Link key={c.champion} to={`/players/${id}/champions?open=${encodeURIComponent(c.champion)}`} className="group flex items-center justify-between p-2 bg-[#121828]/60 border border-[#1B2438] rounded hover:border-cyan-400/40 transition-colors">
                   <div className="flex items-center gap-2">
                     <ChampionPortrait name={c.champion} role={c.role} size={28} linkToProfile={false} />
                     <span className="font-medium group-hover:text-cyan-400">{c.champion}</span>

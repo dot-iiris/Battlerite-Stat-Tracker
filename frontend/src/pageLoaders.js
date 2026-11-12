@@ -11,6 +11,7 @@ export const PAGE_LOADERS = {
   "/leaderboard": () => import("@/pages/Leaderboard"),
   "/players": () => import("@/pages/Players"),
   "/players/:id": () => import("@/pages/PlayerProfile"),
+  "/players/:id/champions": () => import("@/pages/PlayerChampions"),
   "/matrix": () => import("@/pages/Matrix"),
   "/champions": () => import("@/pages/ChampionMatrix"),
   "/champions/:name": () => import("@/pages/ChampionProfile"),
