@@ -2014,6 +2014,77 @@ async def champion_stats(name: str, season_id: Optional[str] = None, format: Opt
     }
 
 
+@api_router.get("/stats/player/{pid}/champions")
+async def player_champion_pool(pid: str, season_id: Optional[str] = None):
+    """A player's champion pool page: every game the player played in these seasons, each with their
+    champion and scoreboard numbers (raw round averages plus the derived team shares and normalised
+    damage). The page filters the games (format, result, map, role, teammate, opponent, last N) and
+    totals them per champion itself. `baseline` is everyone else's average on each champion the player
+    played, in the same seasons and per format ("all" = every format), to compare against."""
+    player = await db.players.find_one({"id": pid}, {"_id": 0})
+    if not player:
+        raise HTTPException(404, "Player not found")
+    sq = await season_filter(season_id)
+
+    mine = await db.matches.find({"players.player_id": pid, **sq}, {"_id": 0}) \
+        .sort([("played_at", -1), ("id", -1)]).to_list(10000)
+    champs = sorted({p["champion"] for m in mine for p in m["players"] if p["player_id"] == pid})
+
+    games = []
+    for m in mine:
+        a_won = m["team_a_rounds"] > m["team_b_rounds"]
+        norm = normalize_match_stats(m)["players"]   # same order as m["players"]
+        for p, n in zip(m["players"], norm):
+            if p["player_id"] != pid:
+                continue
+            mine_r, theirs = (m["team_a_rounds"], m["team_b_rounds"]) if p["team"] == "A" else (m["team_b_rounds"], m["team_a_rounds"])
+            games.append({
+                "match_id": m["id"], "played_at": m["played_at"], "season_id": m.get("season_id"),
+                "format": m.get("format"), "map": m.get("map"), "champion": p["champion"], "role": p["role"],
+                "won": (p["team"] == "A") == a_won, "rounds_won": mine_r, "rounds_lost": theirs,
+                "mmr_change": p.get("elo_delta", 0) if counts_for_mmr(p) else None,
+                "stats": n["raw"], "derived": n["derived"],
+                "teammates": [{"player_id": o["player_id"], "champion": o["champion"], "role": o["role"]}
+                              for o in m["players"] if o["team"] == p["team"] and o is not p],
+                "opponents": [{"player_id": o["player_id"], "champion": o["champion"], "role": o["role"]}
+                              for o in m["players"] if o["team"] != p["team"]],
+                "match": m,
+            })
+            break
+
+    # everyone else on the same champions
+    fields = (*STAT_FIELDS, "damage_normalised", *(f"{f}_team_share" for f in STAT_FIELDS))
+    base = {}   # champion -> format -> sums
+    if champs:
+        async for m in db.matches.find({"players.champion": {"$in": champs}, **sq}, {"_id": 0}):
+            a_won = m["team_a_rounds"] > m["team_b_rounds"]
+            norm = normalize_match_stats(m)["players"]
+            for p, n in zip(m["players"], norm):
+                if p["player_id"] == pid or p["champion"] not in champs:
+                    continue
+                won = (p["team"] == "A") == a_won
+                vals = {**(n["raw"] or {}), **n["derived"]}
+                for key in ("all", m.get("format")):
+                    b = base.setdefault(p["champion"], {}).setdefault(
+                        key, {"picks": 0, "wins": 0, "stat_games": 0, "sums": {}, "counts": {}})
+                    b["picks"] += 1
+                    b["wins"] += won
+                    b["stat_games"] += bool(n["raw"])
+                    for f in fields:
+                        if vals.get(f) is not None:
+                            b["sums"][f] = b["sums"].get(f, 0) + vals[f]
+                            b["counts"][f] = b["counts"].get(f, 0) + 1
+
+    baseline = {
+        c: {key: {"picks": b["picks"], "wins": b["wins"], "stat_games": b["stat_games"],
+                  "winrate": round(b["wins"] / b["picks"] * 100, 1) if b["picks"] else None,
+                  **{f: round(b["sums"][f] / b["counts"][f], 4) for f in b["sums"]}}
+            for key, b in per.items()}
+        for c, per in base.items()
+    }
+    return {"player": player, "games": games, "baseline": baseline}
+
+
 # --------- Matchmaking ---------
 class MatchmakingRequest(BaseModel):
     player_ids: List[str]
